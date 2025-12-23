@@ -45,7 +45,7 @@ function SideMenu({ state, updateState }) {
   const onNavClick = (page) => updateState({ page })
 
   return (
-    <nav className="side-menu">
+    <nav className={`side-menu ${state.menuOpen ? 'open' : ''}`}>
       <button className={`menu-item ${state.page === Page.EVENTS ? 'active' : ''}`} onClick={() => onNavClick(Page.EVENTS)}>Events</button>
       <button className={`menu-item ${state.page === Page.PLAYERS ? 'active' : ''}`} onClick={() => onNavClick(Page.PLAYERS)}>Players</button>
     </nav>
@@ -126,7 +126,7 @@ function App() {
 
       <HamburgerButton state={state} updateState={updateState} />
 
-      {state.menuOpen && <SideMenu state={state} updateState={updateState} />}
+      <SideMenu state={state} updateState={updateState} />
 
       <main className="page-content">
         {state.page === Page.EVENTS && <Events />}

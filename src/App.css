@@ -69,12 +69,18 @@
 .side-menu {
   display: flex;
   flex-direction: column;
-  width: 120px;
+  width: 0;
   min-height: 100vh;
   background: #2d2a4a;
-  padding: 100px 20px 20px;
+  padding: 100px 0 20px;
   gap: 12px;
   flex-shrink: 0;
+  transition: width 0.3s ease, padding 0.3s ease;
+}
+
+.side-menu.open {
+  width: 140px;
+  padding: 100px 10px 10px;
 }
 
 .menu-item {
