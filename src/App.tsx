@@ -92,15 +92,37 @@ const COLORS: ColorScheme[] = [
   { bg: '#f8a5c2', text: '#2d2a4a', hoverBg: '#f593b5', hoverText: '#2d2a4a' }
 ]
 
+// OlympiadBadge Component
+function OlympiadBadge() {
+  const { selectedOlympiad } = useAppStore()
+
+  if (selectedOlympiad === "NoOlympiad") {
+    return (
+      <div className="olympiad-badge empty">
+        Nessuna olimpiade
+      </div>
+    )
+  }
+  else {
+    return (
+      <div className="olympiad-badge">
+        {selectedOlympiad}
+      </div>
+    )
+  }
+}
+
 export default function App() {
-  const { page, menuOpen } = useAppStore()
+  const { page } = useAppStore()
 
   return (
     <div className="app-wrapper">
-      {!menuOpen && <header className="top-bar" />}
       <HamburgerButton />
       <SideMenu />
       <main className="page-content">
+        <div className="olympiad-bar">
+          <OlympiadBadge />
+        </div>
         {page === Page.EVENTS && <Events />}
         {page === Page.PLAYERS && <Players />}
         {page === Page.OLYMPIAD && <Olympiads />}
