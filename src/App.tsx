@@ -195,6 +195,9 @@ function AddItemInput({ placeholder, onAdd }: AddItemInputProps) {
   const [value, setValue] = useState('')
 
   const handleSubmit = () => {
+    // TODO: when handleSubmit run I must set the variable that triggers a modal window for the
+    //       tournament just created
+    //       I would say that I need a boolean isModalRegisterEvent and I can use selectedEvent
     const trimmed = value.trim()
     if (trimmed) {
       onAdd(trimmed)

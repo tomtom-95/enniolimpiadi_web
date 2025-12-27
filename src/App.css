@@ -167,6 +167,8 @@
 /* Item Buttons */
 .item-button {
   display: flex;
+  align-items: center;
+  flex-shrink: 0;
   padding: 1rem 1.5rem;
   font-size: 1.15rem;
   font-weight: 600;
