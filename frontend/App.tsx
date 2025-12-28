@@ -1,6 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { create } from 'zustand'
 import './App.css'
+
+// Use the same hostname as the frontend, but port 8000 for the API
+const API_BASE = `http://${window.location.hostname}:8000`
 
 // Enums
 enum Page {
@@ -29,6 +32,10 @@ interface AppStore {
   selectedEvent:    string
   selectedPlayer:   string
   selectedOlympiad: string
+  // Modal state
+  modalOpen:        boolean
+  modalPIN:         string
+  modalOlympiadName: string
   setMainPage: (page: Page) => void
   setPlayerPage: (selectedPlayer: string) => void
   setEventPage: (selectedEvent: string) => void
@@ -38,12 +45,23 @@ interface AppStore {
   addOlympiad: (name: string) => void
   addEvent: (name: string) => void
   addPlayer: (name: string) => void
+  setOlympiads: (olympiads: string[]) => void
+  showPINModal: (name: string, pin: string) => void
+  closePINModal: () => void
+  createOlympiad: (name: string) => Promise<void>
+}
+
+// localStorage helpers for PIN storage
+function savePIN(olympiad: string, pin: string) {
+  const pins = JSON.parse(localStorage.getItem('olympiadPINs') || '{}')
+  pins[olympiad] = pin
+  localStorage.setItem('olympiadPINs', JSON.stringify(pins))
 }
 
 const useAppStore = create<AppStore>((set) => ({
   page:           Page.EVENTS,
   menuOpen:       false,
-  olympiads:      ["NoOlympiad", "Enniolimpiadi2025", "Enniolimpiadi2026"],
+  olympiads:      ["NoOlympiad"],
   events:         ["NoEvent", "Ping Pong", "Machiavelli", "Scopone", "Monopoli"],
   players: [
     "NoPlayer",
@@ -67,6 +85,10 @@ const useAppStore = create<AppStore>((set) => ({
   selectedEvent:  "NoEvent",
   selectedPlayer: "NoPlayer",
   selectedOlympiad: "NoOlympiad",
+  // Modal state
+  modalOpen: false,
+  modalPIN: "",
+  modalOlympiadName: "",
   setMainPage: (page) => set({ page }),
   setPlayerPage: (selectedPlayer) => set({ selectedPlayer }),
   setEventPage: (selectedEvent) => set({ selectedEvent }),
@@ -75,7 +97,27 @@ const useAppStore = create<AppStore>((set) => ({
   setSelectedEvent: (selectedEvent) => set({ selectedEvent }),
   addOlympiad: (name) => set((s) => ({ olympiads: [...s.olympiads, name] })),
   addEvent: (name) => set((s) => ({ events: [...s.events, name] })),
-  addPlayer: (name) => set((s) => ({ players: [...s.players, name] }))
+  addPlayer: (name) => set((s) => ({ players: [...s.players, name] })),
+  setOlympiads: (olympiads) => set({ olympiads: ["NoOlympiad", ...olympiads] }),
+  showPINModal: (name, pin) => set({ modalOpen: true, modalPIN: pin, modalOlympiadName: name }),
+  closePINModal: () => set({ modalOpen: false, modalPIN: "", modalOlympiadName: "" }),
+  createOlympiad: async (name) => {
+    const res = await fetch(`${API_BASE}/olympiads`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    })
+    const data = await res.json()
+    // Save PIN to localStorage
+    savePIN(data.name, data.pin)
+    // Add to olympiads list and show modal
+    set((s) => ({
+      olympiads: [...s.olympiads, data.name],
+      modalOpen: true,
+      modalPIN: data.pin,
+      modalOlympiadName: data.name
+    }))
+  }
 }))
 
 // Colors for buttons
@@ -112,6 +154,31 @@ function OlympiadBadge() {
   }
 }
 
+function PINModal() {
+  const { modalOpen, modalPIN, modalOlympiadName, closePINModal } = useAppStore()
+
+  if (!modalOpen) return null
+
+  return (
+    <div className="modal-overlay" onClick={closePINModal}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <h2>Olimpiade Creata!</h2>
+        <p className="modal-olympiad-name">{modalOlympiadName}</p>
+        <div className="modal-pin-section">
+          <p>Il tuo PIN di accesso:</p>
+          <div className="modal-pin">{modalPIN}</div>
+        </div>
+        <p className="modal-warning">
+          Conserva questo PIN! Ti servira per modificare l'olimpiade.
+        </p>
+        <button className="modal-ok-button" onClick={closePINModal}>
+          OK
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const { page } = useAppStore()
 
@@ -119,6 +186,7 @@ export default function App() {
     <div className="app-wrapper">
       <HamburgerButton />
       <SideMenu />
+      <PINModal />
       <main className="page-content">
         <div className="olympiad-bar">
           <OlympiadBadge />
@@ -144,7 +212,6 @@ function HamburgerButton() {
   )
 }
 
-// SideMenu Component
 function SideMenu() {
   const { page, menuOpen, setMainPage } = useAppStore()
 
@@ -157,7 +224,6 @@ function SideMenu() {
   )
 }
 
-// ItemButton Component
 interface ItemButtonProps {
   label: string
   color: ColorScheme
@@ -185,7 +251,6 @@ function ItemButton({ label, color, onClick }: ItemButtonProps) {
   )
 }
 
-// AddItemInput Component
 interface AddItemInputProps {
   placeholder: string
   onAdd: (value: string) => void
@@ -230,11 +295,18 @@ function AddItemInput({ placeholder, onAdd }: AddItemInputProps) {
 
 // Olympiads Component
 function Olympiads() {
-  const { olympiads, setOlympiadPage, addOlympiad } = useAppStore()
+  const { olympiads, setOlympiadPage, createOlympiad, setOlympiads } = useAppStore()
+
+  useEffect(() => {
+    fetch(`${API_BASE}/olympiads`)
+      .then(res => res.json())
+      .then(data => setOlympiads(data))
+      .catch(err => console.error('Failed to fetch olympiads:', err))
+  }, [setOlympiads])
 
   return (
     <div className="app-container">
-      <AddItemInput placeholder="Nuova olimpiade..." onAdd={addOlympiad} />
+      <AddItemInput placeholder="Nuova olimpiade..." onAdd={createOlympiad} />
       <div className="items-list">
         {olympiads.slice(1).map((olympiad, i) => (
           <ItemButton
