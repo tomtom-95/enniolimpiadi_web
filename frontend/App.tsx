@@ -32,10 +32,12 @@ interface AppStore {
   selectedEvent:    string
   selectedPlayer:   string
   selectedOlympiad: string
+
   // Modal state
   modalOpen:        boolean
   modalPIN:         string
   modalOlympiadName: string
+
   setMainPage: (page: Page) => void
   setPlayerPage: (selectedPlayer: string) => void
   setEventPage: (selectedEvent: string) => void
@@ -49,6 +51,12 @@ interface AppStore {
   showPINModal: (name: string, pin: string) => void
   closePINModal: () => void
   createOlympiad: (name: string) => Promise<void>
+  renameOlympiad: (oldName: string, newName: string) => void
+  deleteOlympiad: (name: string) => void
+  renameEvent: (oldName: string, newName: string) => void
+  deleteEvent: (name: string) => void
+  renamePlayer: (oldName: string, newName: string) => void
+  deletePlayer: (name: string) => void
 }
 
 // localStorage helpers for PIN storage
@@ -117,7 +125,31 @@ const useAppStore = create<AppStore>((set) => ({
       modalPIN: data.pin,
       modalOlympiadName: data.name
     }))
-  }
+  },
+  renameOlympiad: (oldName, newName) => set((s) => ({
+    olympiads: s.olympiads.map(o => o === oldName ? newName : o),
+    selectedOlympiad: s.selectedOlympiad === oldName ? newName : s.selectedOlympiad
+  })),
+  deleteOlympiad: (name) => set((s) => ({
+    olympiads: s.olympiads.filter(o => o !== name),
+    selectedOlympiad: s.selectedOlympiad === name ? "NoOlympiad" : s.selectedOlympiad
+  })),
+  renameEvent: (oldName, newName) => set((s) => ({
+    events: s.events.map(e => e === oldName ? newName : e),
+    selectedEvent: s.selectedEvent === oldName ? newName : s.selectedEvent
+  })),
+  deleteEvent: (name) => set((s) => ({
+    events: s.events.filter(e => e !== name),
+    selectedEvent: s.selectedEvent === name ? "NoEvent" : s.selectedEvent
+  })),
+  renamePlayer: (oldName, newName) => set((s) => ({
+    players: s.players.map(p => p === oldName ? newName : p),
+    selectedPlayer: s.selectedPlayer === oldName ? newName : s.selectedPlayer
+  })),
+  deletePlayer: (name) => set((s) => ({
+    players: s.players.filter(p => p !== name),
+    selectedPlayer: s.selectedPlayer === name ? "NoPlayer" : s.selectedPlayer
+  }))
 }))
 
 // Colors for buttons
@@ -228,26 +260,84 @@ interface ItemButtonProps {
   label: string
   color: ColorScheme
   onClick?: () => void
+  onRename?: (newName: string) => void
+  onDelete?: () => void
 }
 
-function ItemButton({ label, color, onClick }: ItemButtonProps) {
+function ItemButton({ label, color, onClick, onRename, onDelete }: ItemButtonProps) {
   const [hovered, setHovered] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  const [editValue, setEditValue] = useState(label)
 
   const style = {
     backgroundColor: hovered ? color.hoverBg : color.bg,
     color: hovered ? color.hoverText : color.text
   }
 
+  const handleRenameClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setEditValue(label)
+    setIsEditing(true)
+  }
+
+  const handleRenameSubmit = () => {
+    const trimmed = editValue.trim()
+    if (trimmed && trimmed !== label && onRename) {
+      onRename(trimmed)
+    }
+    setIsEditing(false)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleRenameSubmit()
+    } else if (e.key === 'Escape') {
+      setIsEditing(false)
+      setEditValue(label)
+    }
+  }
+
+  const handleDeleteClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (onDelete) {
+      onDelete()
+    }
+  }
+
+  if (isEditing) {
+    return (
+      <div className="item-button item-button-editing" style={style}>
+        <input
+          type="text"
+          className="item-rename-input"
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onBlur={handleRenameSubmit}
+          autoFocus
+        />
+      </div>
+    )
+  }
+
   return (
-    <button
+    <div
       className="item-button"
       style={style}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onClick={onClick}
     >
-      {label}
-    </button>
+      <span className="item-label">{label}</span>
+      <div className="item-actions">
+        <button className="item-action-btn rename-btn" onClick={handleRenameClick} title="Rinomina">
+          <span className="icon-pencil"></span>
+        </button>
+        <button className="item-action-btn delete-btn" onClick={handleDeleteClick} title="Elimina">
+          <span className="icon-trash"></span>
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -295,7 +385,7 @@ function AddItemInput({ placeholder, onAdd }: AddItemInputProps) {
 
 // Olympiads Component
 function Olympiads() {
-  const { olympiads, setOlympiadPage, createOlympiad, setOlympiads } = useAppStore()
+  const { olympiads, setOlympiadPage, createOlympiad, setOlympiads, renameOlympiad, deleteOlympiad } = useAppStore()
 
   useEffect(() => {
     fetch(`${API_BASE}/olympiads`)
@@ -314,6 +404,8 @@ function Olympiads() {
             label={olympiad}
             color={COLORS[i % COLORS.length]}
             onClick={() => setOlympiadPage(olympiad)}
+            onRename={(newName) => renameOlympiad(olympiad, newName)}
+            onDelete={() => deleteOlympiad(olympiad)}
           />
         ))}
       </div>
@@ -323,7 +415,7 @@ function Olympiads() {
 
 // Events Component
 function Events() {
-  const { events, setEventPage, addEvent } = useAppStore()
+  const { events, setEventPage, addEvent, renameEvent, deleteEvent } = useAppStore()
 
   return (
     <div className="app-container">
@@ -335,6 +427,8 @@ function Events() {
             label={event}
             color={COLORS[i % COLORS.length]}
             onClick={() => setEventPage(event)}
+            onRename={(newName) => renameEvent(event, newName)}
+            onDelete={() => deleteEvent(event)}
           />
         ))}
       </div>
@@ -344,7 +438,7 @@ function Events() {
 
 // Players Component
 function Players() {
-  const { players, setPlayerPage, addPlayer } = useAppStore()
+  const { players, setPlayerPage, addPlayer, renamePlayer, deletePlayer } = useAppStore()
 
   return (
     <div className="app-container">
@@ -356,6 +450,8 @@ function Players() {
             label={player}
             color={COLORS[i % COLORS.length]}
             onClick={() => setPlayerPage(player)}
+            onRename={(newName) => renamePlayer(player, newName)}
+            onDelete={() => deletePlayer(player)}
           />
         ))}
       </div>
