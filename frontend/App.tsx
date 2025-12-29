@@ -21,11 +21,9 @@ interface ColorScheme {
 }
 
 // ============================================
-// ZUSTAND STORE - all state lives here
+// DATA STORE - business logic and data
 // ============================================
-interface AppStore {
-  page:             Page
-  menuOpen:         boolean
+interface DataStore {
   olympiads:        string[]
   events:           string[]
   players:          string[]
@@ -33,30 +31,36 @@ interface AppStore {
   selectedPlayer:   string
   selectedOlympiad: string
 
-  // Modal state
-  modalOpen:        boolean
-  modalPIN:         string
-  modalOlympiadName: string
-
-  setMainPage: (page: Page) => void
-  setPlayerPage: (selectedPlayer: string) => void
-  setEventPage: (selectedEvent: string) => void
-  setOlympiadPage: (selectedOlympiad: string) => void
-  toggleMenu: () => void
-  setSelectedEvent: (selectedEvent: string) => void
+  selectOlympiad: (name: string) => void
+  selectEvent: (name: string) => void
+  selectPlayer: (name: string) => void
   addOlympiad: (name: string) => void
   addEvent: (name: string) => void
   addPlayer: (name: string) => void
   setOlympiads: (olympiads: string[]) => void
-  showPINModal: (name: string, pin: string) => void
-  closePINModal: () => void
-  createOlympiad: (name: string) => Promise<void>
+  createOlympiad: (name: string) => Promise<{ name: string, pin: string }>
   renameOlympiad: (oldName: string, newName: string) => void
   deleteOlympiad: (name: string) => void
   renameEvent: (oldName: string, newName: string) => void
   deleteEvent: (name: string) => void
   renamePlayer: (oldName: string, newName: string) => void
   deletePlayer: (name: string) => void
+}
+
+// ============================================
+// UI STORE - navigation and rendering state
+// ============================================
+interface UIStore {
+  page:             Page
+  menuOpen:         boolean
+  modalOpen:        boolean
+  modalPIN:         string
+  modalOlympiadName: string
+
+  setMainPage: (page: Page) => void
+  toggleMenu: () => void
+  showPINModal: (name: string, pin: string) => void
+  closePINModal: () => void
 }
 
 // localStorage helpers for PIN storage
@@ -66,9 +70,10 @@ function savePIN(olympiad: string, pin: string) {
   localStorage.setItem('olympiadPINs', JSON.stringify(pins))
 }
 
-const useAppStore = create<AppStore>((set) => ({
-  page:           Page.EVENTS,
-  menuOpen:       false,
+// ============================================
+// DATA STORE IMPLEMENTATION
+// ============================================
+const useDataStore = create<DataStore>((set) => ({
   olympiads:      ["NoOlympiad"],
   events:         ["NoEvent", "Ping Pong", "Machiavelli", "Scopone", "Monopoli"],
   players: [
@@ -90,25 +95,17 @@ const useAppStore = create<AppStore>((set) => ({
     "Player11",
     "Player12"
   ],
-  selectedEvent:  "NoEvent",
-  selectedPlayer: "NoPlayer",
+  selectedEvent:    "NoEvent",
+  selectedPlayer:   "NoPlayer",
   selectedOlympiad: "NoOlympiad",
-  // Modal state
-  modalOpen: false,
-  modalPIN: "",
-  modalOlympiadName: "",
-  setMainPage: (page) => set({ page }),
-  setPlayerPage: (selectedPlayer) => set({ selectedPlayer }),
-  setEventPage: (selectedEvent) => set({ selectedEvent }),
-  setOlympiadPage: (selectedOlympiad) => set({ selectedOlympiad }),
-  toggleMenu: () => set((s) => ({ menuOpen: !s.menuOpen })),
-  setSelectedEvent: (selectedEvent) => set({ selectedEvent }),
+
+  selectOlympiad: (name) => set({ selectedOlympiad: name }),
+  selectEvent: (name) => set({ selectedEvent: name }),
+  selectPlayer: (name) => set({ selectedPlayer: name }),
   addOlympiad: (name) => set((s) => ({ olympiads: [...s.olympiads, name] })),
   addEvent: (name) => set((s) => ({ events: [...s.events, name] })),
   addPlayer: (name) => set((s) => ({ players: [...s.players, name] })),
   setOlympiads: (olympiads) => set({ olympiads: ["NoOlympiad", ...olympiads] }),
-  showPINModal: (name, pin) => set({ modalOpen: true, modalPIN: pin, modalOlympiadName: name }),
-  closePINModal: () => set({ modalOpen: false, modalPIN: "", modalOlympiadName: "" }),
   createOlympiad: async (name) => {
     const res = await fetch(`${API_BASE}/olympiads`, {
       method: 'POST',
@@ -116,15 +113,9 @@ const useAppStore = create<AppStore>((set) => ({
       body: JSON.stringify({ name })
     })
     const data = await res.json()
-    // Save PIN to localStorage
     savePIN(data.name, data.pin)
-    // Add to olympiads list and show modal
-    set((s) => ({
-      olympiads: [...s.olympiads, data.name],
-      modalOpen: true,
-      modalPIN: data.pin,
-      modalOlympiadName: data.name
-    }))
+    set((s) => ({ olympiads: [...s.olympiads, data.name] }))
+    return data
   },
   renameOlympiad: (oldName, newName) => set((s) => ({
     olympiads: s.olympiads.map(o => o === oldName ? newName : o),
@@ -152,6 +143,22 @@ const useAppStore = create<AppStore>((set) => ({
   }))
 }))
 
+// ============================================
+// UI STORE IMPLEMENTATION
+// ============================================
+const useUIStore = create<UIStore>((set) => ({
+  page:             Page.EVENTS,
+  menuOpen:         false,
+  modalOpen:        false,
+  modalPIN:         "",
+  modalOlympiadName: "",
+
+  setMainPage: (page) => set({ page }),
+  toggleMenu: () => set((s) => ({ menuOpen: !s.menuOpen })),
+  showPINModal: (name, pin) => set({ modalOpen: true, modalPIN: pin, modalOlympiadName: name }),
+  closePINModal: () => set({ modalOpen: false, modalPIN: "", modalOlympiadName: "" })
+}))
+
 // Colors for buttons
 const COLORS: ColorScheme[] = [
   { bg: '#e85d4c', text: '#fff',    hoverBg: '#c94a3a', hoverText: '#fff' },
@@ -168,7 +175,7 @@ const COLORS: ColorScheme[] = [
 
 // OlympiadBadge Component
 function OlympiadBadge() {
-  const { selectedOlympiad } = useAppStore()
+  const { selectedOlympiad } = useDataStore()
 
   if (selectedOlympiad === "NoOlympiad") {
     return (
@@ -187,7 +194,7 @@ function OlympiadBadge() {
 }
 
 function PINModal() {
-  const { modalOpen, modalPIN, modalOlympiadName, closePINModal } = useAppStore()
+  const { modalOpen, modalPIN, modalOlympiadName, closePINModal } = useUIStore()
 
   if (!modalOpen) return null
 
@@ -212,7 +219,7 @@ function PINModal() {
 }
 
 export default function App() {
-  const { page } = useAppStore()
+  const { page } = useUIStore()
 
   return (
     <div className="app-wrapper">
@@ -233,7 +240,7 @@ export default function App() {
 
 // HamburgerButton Component
 function HamburgerButton() {
-  const { menuOpen, toggleMenu } = useAppStore()
+  const { menuOpen, toggleMenu } = useUIStore()
 
   return (
     <button className={`hamburger ${menuOpen ? 'open' : ''}`} onClick={toggleMenu}>
@@ -245,7 +252,7 @@ function HamburgerButton() {
 }
 
 function SideMenu() {
-  const { page, menuOpen, setMainPage } = useAppStore()
+  const { page, menuOpen, setMainPage } = useUIStore()
 
   return (
     <nav className={`side-menu ${menuOpen ? 'open' : ''}`}>
@@ -385,7 +392,8 @@ function AddItemInput({ placeholder, onAdd }: AddItemInputProps) {
 
 // Olympiads Component
 function Olympiads() {
-  const { olympiads, setOlympiadPage, createOlympiad, setOlympiads, renameOlympiad, deleteOlympiad } = useAppStore()
+  const { olympiads, selectOlympiad, createOlympiad, setOlympiads, renameOlympiad, deleteOlympiad } = useDataStore()
+  const { showPINModal } = useUIStore()
 
   useEffect(() => {
     fetch(`${API_BASE}/olympiads`)
@@ -394,16 +402,21 @@ function Olympiads() {
       .catch(err => console.error('Failed to fetch olympiads:', err))
   }, [setOlympiads])
 
+  const handleCreateOlympiad = async (name: string) => {
+    const data = await createOlympiad(name)
+    showPINModal(data.name, data.pin)
+  }
+
   return (
     <div className="app-container">
-      <AddItemInput placeholder="Nuova olimpiade..." onAdd={createOlympiad} />
+      <AddItemInput placeholder="Nuova olimpiade..." onAdd={handleCreateOlympiad} />
       <div className="items-list">
         {olympiads.slice(1).map((olympiad, i) => (
           <ItemButton
             key={i}
             label={olympiad}
             color={COLORS[i % COLORS.length]}
-            onClick={() => setOlympiadPage(olympiad)}
+            onClick={() => selectOlympiad(olympiad)}
             onRename={(newName) => renameOlympiad(olympiad, newName)}
             onDelete={() => deleteOlympiad(olympiad)}
           />
@@ -415,7 +428,7 @@ function Olympiads() {
 
 // Events Component
 function Events() {
-  const { events, setEventPage, addEvent, renameEvent, deleteEvent } = useAppStore()
+  const { events, selectEvent, addEvent, renameEvent, deleteEvent } = useDataStore()
 
   return (
     <div className="app-container">
@@ -426,7 +439,7 @@ function Events() {
             key={i}
             label={event}
             color={COLORS[i % COLORS.length]}
-            onClick={() => setEventPage(event)}
+            onClick={() => selectEvent(event)}
             onRename={(newName) => renameEvent(event, newName)}
             onDelete={() => deleteEvent(event)}
           />
@@ -438,7 +451,7 @@ function Events() {
 
 // Players Component
 function Players() {
-  const { players, setPlayerPage, addPlayer, renamePlayer, deletePlayer } = useAppStore()
+  const { players, selectPlayer, addPlayer, renamePlayer, deletePlayer } = useDataStore()
 
   return (
     <div className="app-container">
@@ -449,7 +462,7 @@ function Players() {
             key={i}
             label={player}
             color={COLORS[i % COLORS.length]}
-            onClick={() => setPlayerPage(player)}
+            onClick={() => selectPlayer(player)}
             onRename={(newName) => renamePlayer(player, newName)}
             onDelete={() => deletePlayer(player)}
           />
