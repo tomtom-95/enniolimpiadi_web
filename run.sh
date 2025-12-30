@@ -12,22 +12,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_PORT=8001
 FRONTEND_PORT=5173
 
-wait_for_port_free() {
-    local port=$1
-    local max_attempts=10
-    local attempt=0
-
-    while lsof -ti:$port > /dev/null 2>&1; do
-        attempt=$((attempt + 1))
-        if [ $attempt -ge $max_attempts ]; then
-            echo -e "${RED}Warning: Port $port still in use after ${max_attempts} attempts${NC}"
-            return 1
-        fi
-        sleep 0.5
-    done
-    return 0
-}
-
 stop() {
     echo -e "${RED}Stopping application...${NC}"
 
@@ -41,14 +25,12 @@ stop() {
     if lsof -ti:$BACKEND_PORT > /dev/null 2>&1; then
         echo "Stopping backend (port $BACKEND_PORT)..."
         lsof -ti:$BACKEND_PORT | xargs kill -9 2>/dev/null
-        wait_for_port_free $BACKEND_PORT
     fi
 
     # Kill processes on frontend port
     if lsof -ti:$FRONTEND_PORT > /dev/null 2>&1; then
         echo "Stopping frontend (port $FRONTEND_PORT)..."
         lsof -ti:$FRONTEND_PORT | xargs kill -9 2>/dev/null
-        wait_for_port_free $FRONTEND_PORT
     fi
 
     echo -e "${GREEN}Application stopped.${NC}"
@@ -106,6 +88,33 @@ start() {
     wait
 }
 
+purge() {
+    echo -e "${RED}Purging all dependencies...${NC}"
+
+    # Stop any running processes first
+    stop
+
+    # Delete node_modules
+    if [ -d "$SCRIPT_DIR/node_modules" ]; then
+        echo "Removing node_modules..."
+        rm -rf "$SCRIPT_DIR/node_modules"
+    fi
+
+    # Delete venv
+    if [ -d "$SCRIPT_DIR/venv" ]; then
+        echo "Removing Python virtual environment..."
+        rm -rf "$SCRIPT_DIR/venv"
+    fi
+
+    # Delete database file
+    if [ -f "$SCRIPT_DIR/backend/olympiad.db" ]; then
+        echo "Removing database file..."
+        rm "$SCRIPT_DIR/backend/olympiad.db"
+    fi
+
+    echo -e "${GREEN}All dependencies purged. Run './run.sh start' to rebuild from scratch.${NC}"
+}
+
 status() {
     echo -e "${YELLOW}Application status:${NC}"
 
@@ -123,13 +132,14 @@ status() {
 }
 
 usage() {
-    echo "Usage: $0 {start|stop|restart|status}"
+    echo "Usage: $0 {start|stop|restart|status|purge}"
     echo ""
     echo "Commands:"
     echo "  start   - Stop any running instances, install dependencies, and start"
     echo "  stop    - Stop both frontend and backend"
     echo "  restart - Stop and start the application"
     echo "  status  - Check if the application is running"
+    echo "  purge   - Remove all dependencies (node_modules, venv, db) for a clean rebuild"
 }
 
 # Handle Ctrl+C
@@ -149,6 +159,9 @@ case "$1" in
         ;;
     status)
         status
+        ;;
+    purge)
+        purge
         ;;
     *)
         usage
