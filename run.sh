@@ -7,16 +7,55 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PIDFILE="$SCRIPT_DIR/.app.pids"
+
+# Hardcoded ports
+BACKEND_PORT=8001
+FRONTEND_PORT=5173
+
+wait_for_port_free() {
+    local port=$1
+    local max_attempts=10
+    local attempt=0
+
+    while lsof -ti:$port > /dev/null 2>&1; do
+        attempt=$((attempt + 1))
+        if [ $attempt -ge $max_attempts ]; then
+            echo -e "${RED}Warning: Port $port still in use after ${max_attempts} attempts${NC}"
+            return 1
+        fi
+        sleep 0.5
+    done
+    return 0
+}
+
+stop() {
+    echo -e "${RED}Stopping application...${NC}"
+
+    # Delete database file
+    if [ -f "$SCRIPT_DIR/backend/olympiad.db" ]; then
+        echo "Deleting database file..."
+        rm "$SCRIPT_DIR/backend/olympiad.db"
+    fi
+
+    # Kill processes on backend port
+    if lsof -ti:$BACKEND_PORT > /dev/null 2>&1; then
+        echo "Stopping backend (port $BACKEND_PORT)..."
+        lsof -ti:$BACKEND_PORT | xargs kill -9 2>/dev/null
+        wait_for_port_free $BACKEND_PORT
+    fi
+
+    # Kill processes on frontend port
+    if lsof -ti:$FRONTEND_PORT > /dev/null 2>&1; then
+        echo "Stopping frontend (port $FRONTEND_PORT)..."
+        lsof -ti:$FRONTEND_PORT | xargs kill -9 2>/dev/null
+        wait_for_port_free $FRONTEND_PORT
+    fi
+
+    echo -e "${GREEN}Application stopped.${NC}"
+}
 
 start() {
     echo -e "${GREEN}Starting application...${NC}"
-
-    # Check if already running
-    if [ -f "$PIDFILE" ]; then
-        echo -e "${YELLOW}Application may already be running. Run './run.sh stop' first.${NC}"
-        exit 1
-    fi
 
     # --- Frontend Setup ---
     echo -e "${YELLOW}Setting up frontend...${NC}"
@@ -31,39 +70,34 @@ start() {
 
     # --- Backend Setup ---
     echo -e "${YELLOW}Setting up backend...${NC}"
-    cd "$SCRIPT_DIR/backend"
 
-    # Create virtual environment if it doesn't exist
-    if [ ! -d ".venv" ]; then
+    # Create virtual environment in root if it doesn't exist
+    if [ ! -d "$SCRIPT_DIR/venv" ]; then
         echo "Creating Python virtual environment..."
-        python3 -m venv .venv
+        python3 -m venv "$SCRIPT_DIR/venv"
     fi
 
     # Activate virtual environment
-    source .venv/bin/activate
+    source "$SCRIPT_DIR/venv/bin/activate"
 
     # Install dependencies
     echo "Installing backend dependencies..."
-    pip install -r requirements.txt --quiet
+    pip install -r "$SCRIPT_DIR/backend/requirements.txt" -q
 
     # --- Start Services ---
     echo -e "${GREEN}Starting backend server...${NC}"
-    uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
-    BACKEND_PID=$!
+    cd "$SCRIPT_DIR/backend"
+    uvicorn main:app --reload --host 0.0.0.0 --port $BACKEND_PORT &
 
     cd "$SCRIPT_DIR"
     echo -e "${GREEN}Starting frontend server...${NC}"
     npm run dev -- --host &
-    FRONTEND_PID=$!
-
-    # Save PIDs
-    echo "$BACKEND_PID $FRONTEND_PID" > "$PIDFILE"
 
     echo ""
     echo -e "${GREEN}========================================${NC}"
     echo -e "${GREEN}Application started!${NC}"
-    echo -e "Frontend: ${YELLOW}http://localhost:5173${NC}"
-    echo -e "Backend:  ${YELLOW}http://localhost:8000${NC}"
+    echo -e "Frontend: ${YELLOW}http://localhost:$FRONTEND_PORT${NC}"
+    echo -e "Backend:  ${YELLOW}http://localhost:$BACKEND_PORT${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
     echo -e "Press Ctrl+C or run '${YELLOW}./run.sh stop${NC}' to stop the application."
@@ -72,53 +106,19 @@ start() {
     wait
 }
 
-stop() {
-    echo -e "${RED}Stopping application...${NC}"
-
-    if [ -f "$PIDFILE" ]; then
-        read BACKEND_PID FRONTEND_PID < "$PIDFILE"
-
-        # Kill backend
-        if [ -n "$BACKEND_PID" ] && kill -0 "$BACKEND_PID" 2>/dev/null; then
-            echo "Stopping backend (PID: $BACKEND_PID)..."
-            kill "$BACKEND_PID" 2>/dev/null
-        fi
-
-        # Kill frontend
-        if [ -n "$FRONTEND_PID" ] && kill -0 "$FRONTEND_PID" 2>/dev/null; then
-            echo "Stopping frontend (PID: $FRONTEND_PID)..."
-            kill "$FRONTEND_PID" 2>/dev/null
-        fi
-
-        rm "$PIDFILE"
-        echo -e "${GREEN}Application stopped.${NC}"
-    else
-        echo "No PID file found. Trying to kill by port..."
-        # Fallback: kill by port
-        lsof -ti:8000 | xargs kill -9 2>/dev/null
-        lsof -ti:5173 | xargs kill -9 2>/dev/null
-        echo -e "${GREEN}Killed processes on ports 8000 and 5173.${NC}"
-    fi
-}
-
 status() {
-    if [ -f "$PIDFILE" ]; then
-        read BACKEND_PID FRONTEND_PID < "$PIDFILE"
-        echo -e "${YELLOW}Application status:${NC}"
+    echo -e "${YELLOW}Application status:${NC}"
 
-        if kill -0 "$BACKEND_PID" 2>/dev/null; then
-            echo -e "  Backend:  ${GREEN}Running${NC} (PID: $BACKEND_PID)"
-        else
-            echo -e "  Backend:  ${RED}Stopped${NC}"
-        fi
-
-        if kill -0 "$FRONTEND_PID" 2>/dev/null; then
-            echo -e "  Frontend: ${GREEN}Running${NC} (PID: $FRONTEND_PID)"
-        else
-            echo -e "  Frontend: ${RED}Stopped${NC}"
-        fi
+    if lsof -ti:$BACKEND_PORT > /dev/null 2>&1; then
+        echo -e "  Backend (port $BACKEND_PORT):  ${GREEN}Running${NC}"
     else
-        echo -e "${YELLOW}Application is not running.${NC}"
+        echo -e "  Backend (port $BACKEND_PORT):  ${RED}Stopped${NC}"
+    fi
+
+    if lsof -ti:$FRONTEND_PORT > /dev/null 2>&1; then
+        echo -e "  Frontend (port $FRONTEND_PORT): ${GREEN}Running${NC}"
+    else
+        echo -e "  Frontend (port $FRONTEND_PORT): ${RED}Stopped${NC}"
     fi
 }
 
@@ -126,7 +126,7 @@ usage() {
     echo "Usage: $0 {start|stop|restart|status}"
     echo ""
     echo "Commands:"
-    echo "  start   - Install dependencies and start frontend + backend"
+    echo "  start   - Stop any running instances, install dependencies, and start"
     echo "  stop    - Stop both frontend and backend"
     echo "  restart - Stop and start the application"
     echo "  status  - Check if the application is running"
@@ -144,7 +144,7 @@ case "$1" in
         ;;
     restart)
         stop
-        sleep 2
+        sleep 1
         start
         ;;
     status)

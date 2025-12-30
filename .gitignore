@@ -240,4 +240,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-.app.pids
+# Database
+olympiad.db

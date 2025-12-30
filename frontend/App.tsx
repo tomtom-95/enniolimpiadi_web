@@ -2,17 +2,45 @@ import { useState, useEffect } from 'react'
 import { create } from 'zustand'
 import './App.css'
 
-// Use the same hostname as the frontend, but port 8000 for the API
-const API_BASE = `http://${window.location.hostname}:8000`
+// Use the same hostname as the frontend, but port 8001 for the API
+const API_BASE = `http://${window.location.hostname}:8001`
 
-// Enums
 enum Page {
   OLYMPIAD = 'olympiad',
   EVENTS   = 'events',
   PLAYERS  = 'players'
 }
 
-// Types
+// API Types (matching backend responses)
+interface OlympiadSummary {
+  name: string
+  version: number
+}
+
+interface PlayerResponse {
+  id: number
+  name: string
+  version: number
+}
+
+interface TournamentResponse {
+  id: number
+  name: string
+  type: 'round_robin' | 'single_elimination' | 'double_elimination'
+  status: 'pending' | 'in_progress' | 'completed'
+  version: number
+}
+
+interface OlympiadDetail {
+  id: number
+  name: string
+  pin: string
+  version: number
+  players: PlayerResponse[]
+  tournaments: TournamentResponse[]
+}
+
+// UI Types
 interface ColorScheme {
   bg: string
   text: string
@@ -24,37 +52,40 @@ interface ColorScheme {
 // DATA STORE - business logic and data
 // ============================================
 interface DataStore {
-  olympiads:        string[]
-  events:           string[]
-  players:          string[]
-  selectedEvent:    string
-  selectedPlayer:   string
+  olympiads: OlympiadSummary[]
   selectedOlympiad: string
+  selectedOlympiadData: OlympiadDetail | null
+  loading: boolean
+  error: string | null
 
+  // Olympiad actions
+  // setOlympiads: (olympiads: string[]) => void
   selectOlympiad: (name: string) => void
-  selectEvent: (name: string) => void
-  selectPlayer: (name: string) => void
-  addOlympiad: (name: string) => void
-  addEvent: (name: string) => void
-  addPlayer: (name: string) => void
-  setOlympiads: (olympiads: string[]) => void
-  createOlympiad: (name: string) => Promise<{ name: string, pin: string }>
-  renameOlympiad: (oldName: string, newName: string) => void
-  deleteOlympiad: (name: string) => void
-  renameEvent: (oldName: string, newName: string) => void
-  deleteEvent: (name: string) => void
-  renamePlayer: (oldName: string, newName: string) => void
-  deletePlayer: (name: string) => void
+  fetchOlympiads: () => Promise<void>
+  fetchOlympiadDetail: (name: string) => Promise<void>
+  createOlympiad: (name: string) => Promise<{ name: string; pin: string }>
+  renameOlympiad: (oldName: string, newName: string, version: number) => Promise<void>
+  deleteOlympiad: (name: string) => Promise<void>
+
+  // Player actions
+  createPlayer: (name: string) => Promise<void>
+  renamePlayer: (playerId: number, newName: string, version: number) => Promise<void>
+  deletePlayer: (playerId: number) => Promise<void>
+
+  // Tournament actions
+  createTournament: (name: string, type: TournamentResponse['type']) => Promise<void>
+  renameTournament: (tournamentId: number, newName: string, version: number) => Promise<void>
+  deleteTournament: (tournamentId: number) => Promise<void>
 }
 
 // ============================================
 // UI STORE - navigation and rendering state
 // ============================================
 interface UIStore {
-  page:             Page
-  menuOpen:         boolean
-  modalOpen:        boolean
-  modalPIN:         string
+  page: Page
+  menuOpen: boolean
+  modalOpen: boolean
+  modalPIN: string
   modalOlympiadName: string
 
   setMainPage: (page: Page) => void
@@ -73,99 +104,252 @@ function savePIN(olympiad: string, pin: string) {
 // ============================================
 // DATA STORE IMPLEMENTATION
 // ============================================
-const useDataStore = create<DataStore>((set) => ({
-  olympiads:      ["NoOlympiad"],
-  events:         ["NoEvent", "Ping Pong", "Machiavelli", "Scopone", "Monopoli"],
-  players: [
-    "NoPlayer",
-    "Marco",
-    "Luca",
-    "Giulia",
-    "Sara",
-    "Player01",
-    "Player02",
-    "Player03",
-    "Player04",
-    "Player05",
-    "Player06",
-    "Player07",
-    "Player08",
-    "Player09",
-    "Player10",
-    "Player11",
-    "Player12"
-  ],
-  selectedEvent:    "NoEvent",
-  selectedPlayer:   "NoPlayer",
-  selectedOlympiad: "NoOlympiad",
+const useDataStore = create<DataStore>((set, get) => ({
+  olympiads: [],
+  selectedOlympiad: '',
+  selectedOlympiadData: null,
+  loading: false,
+  error: null,
 
-  selectOlympiad: (name) => set({ selectedOlympiad: name }),
-  selectEvent: (name) => set({ selectedEvent: name }),
-  selectPlayer: (name) => set({ selectedPlayer: name }),
-  addOlympiad: (name) => set((s) => ({ olympiads: [...s.olympiads, name] })),
-  addEvent: (name) => set((s) => ({ events: [...s.events, name] })),
-  addPlayer: (name) => set((s) => ({ players: [...s.players, name] })),
-  setOlympiads: (olympiads) => set({ olympiads: ["NoOlympiad", ...olympiads] }),
-  createOlympiad: async (name) => {
+  // setOlympiads: (olympiads) => set({ olympiads }),
+
+  selectOlympiad: (name) => {
+    set({ selectedOlympiad: name, selectedOlympiadData: null })
+    if (name) {
+      get().fetchOlympiadDetail(name)
+    }
+  },
+
+  fetchOlympiads: async () => {
+    try {
+      set({ loading: true, error: null })
+      const res = await fetch(`${API_BASE}/olympiads`)
+      if (!res.ok) throw new Error('Failed to fetch olympiads')
+      const data = await res.json()
+      set({ olympiads: data, loading: false })
+    } catch (err) {
+      set({ error: (err as Error).message, loading: false })
+    }
+  },
+
+  fetchOlympiadDetail: async (name: string) => {
+    try {
+      set({ loading: true, error: null })
+      const res = await fetch(`${API_BASE}/olympiads/${encodeURIComponent(name)}`)
+      if (!res.ok) {
+        if (res.status === 404) {
+          set({ selectedOlympiad: '', selectedOlympiadData: null, loading: false })
+          get().fetchOlympiads()
+          return
+        }
+        throw new Error('Failed to fetch olympiad details')
+      }
+      const data = await res.json()
+      set({ selectedOlympiadData: data, loading: false })
+    } catch (err) {
+      set({ error: (err as Error).message, loading: false })
+    }
+  },
+
+  createOlympiad: async (name: string) => {
     const res = await fetch(`${API_BASE}/olympiads`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name })
     })
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Failed to create olympiad')
+    }
     const data = await res.json()
     savePIN(data.name, data.pin)
-    set((s) => ({ olympiads: [...s.olympiads, data.name] }))
+    set((s) => ({ olympiads: [...s.olympiads, { name: data.name, version: data.version }] }))
     return data
   },
-  renameOlympiad: (oldName, newName) => set((s) => ({
-    olympiads: s.olympiads.map(o => o === oldName ? newName : o),
-    selectedOlympiad: s.selectedOlympiad === oldName ? newName : s.selectedOlympiad
-  })),
-  deleteOlympiad: (name) => set((s) => ({
-    olympiads: s.olympiads.filter(o => o !== name),
-    selectedOlympiad: s.selectedOlympiad === name ? "NoOlympiad" : s.selectedOlympiad
-  })),
-  renameEvent: (oldName, newName) => set((s) => ({
-    events: s.events.map(e => e === oldName ? newName : e),
-    selectedEvent: s.selectedEvent === oldName ? newName : s.selectedEvent
-  })),
-  deleteEvent: (name) => set((s) => ({
-    events: s.events.filter(e => e !== name),
-    selectedEvent: s.selectedEvent === name ? "NoEvent" : s.selectedEvent
-  })),
-  renamePlayer: (oldName, newName) => set((s) => ({
-    players: s.players.map(p => p === oldName ? newName : p),
-    selectedPlayer: s.selectedPlayer === oldName ? newName : s.selectedPlayer
-  })),
-  deletePlayer: (name) => set((s) => ({
-    players: s.players.filter(p => p !== name),
-    selectedPlayer: s.selectedPlayer === name ? "NoPlayer" : s.selectedPlayer
-  }))
+
+  renameOlympiad: async (oldName: string, newName: string, version: number) => {
+    const res = await fetch(`${API_BASE}/olympiads/${encodeURIComponent(oldName)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName, version })
+    })
+    if (!res.ok) {
+      const error = await res.json()
+      if (res.status === 409) {
+        alert('This olympiad was modified by another user. Refreshing...')
+        get().fetchOlympiads()
+        return
+      }
+      throw new Error(error.detail || 'Failed to rename olympiad')
+    }
+    const responseData = await res.json()
+    set((s) => ({
+      olympiads: s.olympiads.map((o) =>
+        o.name === oldName ? { name: responseData.name, version: responseData.version } : o
+      ),
+      selectedOlympiad: s.selectedOlympiad === oldName ? newName : s.selectedOlympiad
+    }))
+    // Refresh detail if this is the selected olympiad
+    if (get().selectedOlympiad === newName) {
+      get().fetchOlympiadDetail(newName)
+    }
+  },
+
+  deleteOlympiad: async (name: string) => {
+    const res = await fetch(`${API_BASE}/olympiads/${encodeURIComponent(name)}`, {
+      method: 'DELETE'
+    })
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Failed to delete olympiad')
+    }
+    set((s) => ({
+      olympiads: s.olympiads.filter((o) => o.name !== name),
+      selectedOlympiad: s.selectedOlympiad === name ? '' : s.selectedOlympiad,
+      selectedOlympiadData: s.selectedOlympiad === name ? null : s.selectedOlympiadData
+    }))
+  },
+
+  // Player actions
+  createPlayer: async (name: string) => {
+    const olympiadName = get().selectedOlympiad
+    if (!olympiadName) return
+
+    const res = await fetch(`${API_BASE}/olympiads/${encodeURIComponent(olympiadName)}/players`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    })
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Failed to create player')
+    }
+    // Refresh olympiad data to get updated player list
+    get().fetchOlympiadDetail(olympiadName)
+  },
+
+  renamePlayer: async (playerId: number, newName: string, version: number) => {
+    const olympiadName = get().selectedOlympiad
+    if (!olympiadName) return
+
+    const res = await fetch(
+      `${API_BASE}/olympiads/${encodeURIComponent(olympiadName)}/players/${playerId}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName, version })
+      }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      if (res.status === 409) {
+        alert('This player was modified by another user. Refreshing...')
+        get().fetchOlympiadDetail(olympiadName)
+        return
+      }
+      throw new Error(error.detail || 'Failed to rename player')
+    }
+    get().fetchOlympiadDetail(olympiadName)
+  },
+
+  deletePlayer: async (playerId: number) => {
+    const olympiadName = get().selectedOlympiad
+    if (!olympiadName) return
+
+    const res = await fetch(
+      `${API_BASE}/olympiads/${encodeURIComponent(olympiadName)}/players/${playerId}`,
+      { method: 'DELETE' }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Failed to delete player')
+    }
+    get().fetchOlympiadDetail(olympiadName)
+  },
+
+  // Tournament actions
+  createTournament: async (name: string, type: TournamentResponse['type']) => {
+    const olympiadName = get().selectedOlympiad
+    if (!olympiadName) return
+
+    const res = await fetch(
+      `${API_BASE}/olympiads/${encodeURIComponent(olympiadName)}/tournaments`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, type })
+      }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Failed to create tournament')
+    }
+    get().fetchOlympiadDetail(olympiadName)
+  },
+
+  renameTournament: async (tournamentId: number, newName: string, version: number) => {
+    const olympiadName = get().selectedOlympiad
+    if (!olympiadName) return
+
+    const res = await fetch(
+      `${API_BASE}/olympiads/${encodeURIComponent(olympiadName)}/tournaments/${tournamentId}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName, version })
+      }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      if (res.status === 409) {
+        alert('This tournament was modified by another user. Refreshing...')
+        get().fetchOlympiadDetail(olympiadName)
+        return
+      }
+      throw new Error(error.detail || 'Failed to rename tournament')
+    }
+    get().fetchOlympiadDetail(olympiadName)
+  },
+
+  deleteTournament: async (tournamentId: number) => {
+    const olympiadName = get().selectedOlympiad
+    if (!olympiadName) return
+
+    const res = await fetch(
+      `${API_BASE}/olympiads/${encodeURIComponent(olympiadName)}/tournaments/${tournamentId}`,
+      { method: 'DELETE' }
+    )
+    if (!res.ok) {
+      const error = await res.json()
+      throw new Error(error.detail || 'Failed to delete tournament')
+    }
+    get().fetchOlympiadDetail(olympiadName)
+  }
 }))
 
 // ============================================
 // UI STORE IMPLEMENTATION
 // ============================================
 const useUIStore = create<UIStore>((set) => ({
-  page:             Page.EVENTS,
-  menuOpen:         false,
-  modalOpen:        false,
-  modalPIN:         "",
-  modalOlympiadName: "",
+  page: Page.OLYMPIAD,
+  menuOpen: false,
+  modalOpen: false,
+  modalPIN: '',
+  modalOlympiadName: '',
 
   setMainPage: (page) => set({ page }),
   toggleMenu: () => set((s) => ({ menuOpen: !s.menuOpen })),
   showPINModal: (name, pin) => set({ modalOpen: true, modalPIN: pin, modalOlympiadName: name }),
-  closePINModal: () => set({ modalOpen: false, modalPIN: "", modalOlympiadName: "" })
+  closePINModal: () => set({ modalOpen: false, modalPIN: '', modalOlympiadName: '' })
 }))
 
 // Colors for buttons
 const COLORS: ColorScheme[] = [
-  { bg: '#e85d4c', text: '#fff',    hoverBg: '#c94a3a', hoverText: '#fff' },
+  { bg: '#e85d4c', text: '#fff', hoverBg: '#c94a3a', hoverText: '#fff' },
   { bg: '#5bc0be', text: '#2d2a4a', hoverBg: '#45a3a1', hoverText: '#fff' },
   { bg: '#ffb347', text: '#2d2a4a', hoverBg: '#e99d33', hoverText: '#2d2a4a' },
-  { bg: '#a78bfa', text: '#fff',    hoverBg: '#8b6fe0', hoverText: '#fff' },
-  { bg: '#ff6b6b', text: '#fff',    hoverBg: '#e55a5a', hoverText: '#fff' },
+  { bg: '#a78bfa', text: '#fff', hoverBg: '#8b6fe0', hoverText: '#fff' },
+  { bg: '#ff6b6b', text: '#fff', hoverBg: '#e55a5a', hoverText: '#fff' },
   { bg: '#4ecdc4', text: '#2d2a4a', hoverBg: '#3dbdb5', hoverText: '#fff' },
   { bg: '#ffe66d', text: '#2d2a4a', hoverBg: '#f5dc5d', hoverText: '#2d2a4a' },
   { bg: '#95e1d3', text: '#2d2a4a', hoverBg: '#7ed3c4', hoverText: '#2d2a4a' },
@@ -177,19 +361,10 @@ const COLORS: ColorScheme[] = [
 function OlympiadBadge() {
   const { selectedOlympiad } = useDataStore()
 
-  if (selectedOlympiad === "NoOlympiad") {
-    return (
-      <div className="olympiad-badge empty">
-        Nessuna olimpiade
-      </div>
-    )
-  }
-  else {
-    return (
-      <div className="olympiad-badge">
-        {selectedOlympiad}
-      </div>
-    )
+  if (!selectedOlympiad) {
+    return <div className="olympiad-badge empty">Nessuna olimpiade</div>
+  } else {
+    return <div className="olympiad-badge">{selectedOlympiad}</div>
   }
 }
 
@@ -207,9 +382,7 @@ function PINModal() {
           <p>Il tuo PIN di accesso:</p>
           <div className="modal-pin">{modalPIN}</div>
         </div>
-        <p className="modal-warning">
-          Conserva questo PIN! Ti servira per modificare l'olimpiade.
-        </p>
+        <p className="modal-warning">Conserva questo PIN! Ti servira per modificare l'olimpiade.</p>
         <button className="modal-ok-button" onClick={closePINModal}>
           OK
         </button>
@@ -220,6 +393,11 @@ function PINModal() {
 
 export default function App() {
   const { page } = useUIStore()
+  const { fetchOlympiads } = useDataStore()
+
+  useEffect(() => {
+    fetchOlympiads()
+  }, [fetchOlympiads])
 
   return (
     <div className="app-wrapper">
@@ -256,9 +434,24 @@ function SideMenu() {
 
   return (
     <nav className={`side-menu ${menuOpen ? 'open' : ''}`}>
-      <button className={`menu-item ${page === Page.OLYMPIAD ? 'active' : ''}`} onClick={() => setMainPage(Page.OLYMPIAD)}>Olimpiadi</button>
-      <button className={`menu-item ${page === Page.EVENTS   ? 'active' : ''}`} onClick={() => setMainPage(Page.EVENTS)}>Eventi</button>
-      <button className={`menu-item ${page === Page.PLAYERS  ? 'active' : ''}`} onClick={() => setMainPage(Page.PLAYERS)}>Giocatori</button>
+      <button
+        className={`menu-item ${page === Page.OLYMPIAD ? 'active' : ''}`}
+        onClick={() => setMainPage(Page.OLYMPIAD)}
+      >
+        Olimpiadi
+      </button>
+      <button
+        className={`menu-item ${page === Page.EVENTS ? 'active' : ''}`}
+        onClick={() => setMainPage(Page.EVENTS)}
+      >
+        Eventi
+      </button>
+      <button
+        className={`menu-item ${page === Page.PLAYERS ? 'active' : ''}`}
+        onClick={() => setMainPage(Page.PLAYERS)}
+      >
+        Giocatori
+      </button>
     </nav>
   )
 }
@@ -336,14 +529,20 @@ function ItemButton({ label, color, onClick, onRename, onDelete }: ItemButtonPro
       onClick={onClick}
     >
       <span className="item-label">{label}</span>
-      <div className="item-actions">
-        <button className="item-action-btn rename-btn" onClick={handleRenameClick} title="Rinomina">
-          <span className="icon-pencil"></span>
-        </button>
-        <button className="item-action-btn delete-btn" onClick={handleDeleteClick} title="Elimina">
-          <span className="icon-trash"></span>
-        </button>
-      </div>
+      {(onRename || onDelete) && (
+        <div className="item-actions">
+          {onRename && (
+            <button className="item-action-btn rename-btn" onClick={handleRenameClick} title="Rinomina">
+              <span className="icon-pencil"></span>
+            </button>
+          )}
+          {onDelete && (
+            <button className="item-action-btn delete-btn" onClick={handleDeleteClick} title="Elimina">
+              <span className="icon-trash"></span>
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -357,9 +556,6 @@ function AddItemInput({ placeholder, onAdd }: AddItemInputProps) {
   const [value, setValue] = useState('')
 
   const handleSubmit = () => {
-    // TODO: when handleSubmit run I must set the variable that triggers a modal window for the
-    //       tournament just created
-    //       I would say that I need a boolean isModalRegisterEvent and I can use selectedEvent
     const trimmed = value.trim()
     if (trimmed) {
       onAdd(trimmed)
@@ -392,33 +588,60 @@ function AddItemInput({ placeholder, onAdd }: AddItemInputProps) {
 
 // Olympiads Component
 function Olympiads() {
-  const { olympiads, selectOlympiad, createOlympiad, setOlympiads, renameOlympiad, deleteOlympiad } = useDataStore()
-  const { showPINModal } = useUIStore()
-
-  useEffect(() => {
-    fetch(`${API_BASE}/olympiads`)
-      .then(res => res.json())
-      .then(data => setOlympiads(data))
-      .catch(err => console.error('Failed to fetch olympiads:', err))
-  }, [setOlympiads])
+  const {
+    olympiads,
+    // selectedOlympiad,
+    // selectedOlympiadData,
+    selectOlympiad,
+    createOlympiad,
+    renameOlympiad,
+    deleteOlympiad
+  } = useDataStore()
+  const { showPINModal, setMainPage } = useUIStore()
 
   const handleCreateOlympiad = async (name: string) => {
-    const data = await createOlympiad(name)
-    showPINModal(data.name, data.pin)
+    try {
+      const data = await createOlympiad(name)
+      showPINModal(data.name, data.pin)
+    } catch (err) {
+      alert((err as Error).message)
+    }
+  }
+
+  const handleSelectOlympiad = (name: string) => {
+    selectOlympiad(name)
+    setMainPage(Page.EVENTS)
+  }
+
+  const handleRename = async (oldName: string, newName: string, version: number) => {
+    try {
+      await renameOlympiad(oldName, newName, version)
+    } catch (err) {
+      alert((err as Error).message)
+    }
+  }
+
+  const handleDelete = async (name: string) => {
+    if (!confirm(`Sei sicuro di voler eliminare "${name}"?`)) return
+    try {
+      await deleteOlympiad(name)
+    } catch (err) {
+      alert((err as Error).message)
+    }
   }
 
   return (
     <div className="app-container">
       <AddItemInput placeholder="Nuova olimpiade..." onAdd={handleCreateOlympiad} />
       <div className="items-list">
-        {olympiads.slice(1).map((olympiad, i) => (
+        {olympiads.map((olympiad, i) => (
           <ItemButton
-            key={i}
-            label={olympiad}
+            key={olympiad.name}
+            label={olympiad.name}
             color={COLORS[i % COLORS.length]}
-            onClick={() => selectOlympiad(olympiad)}
-            onRename={(newName) => renameOlympiad(olympiad, newName)}
-            onDelete={() => deleteOlympiad(olympiad)}
+            onClick={() => handleSelectOlympiad(olympiad.name)}
+            onRename={(newName) => handleRename(olympiad.name, newName, olympiad.version)}
+            onDelete={() => handleDelete(olympiad.name)}
           />
         ))}
       </div>
@@ -428,20 +651,55 @@ function Olympiads() {
 
 // Events Component
 function Events() {
-  const { events, selectEvent, addEvent, renameEvent, deleteEvent } = useDataStore()
+  const { selectedOlympiad, selectedOlympiadData, createTournament, renameTournament, deleteTournament } =
+    useDataStore()
+
+  if (!selectedOlympiad) {
+    return (
+      <div className="app-container">
+        <p className="empty-message">Seleziona un'olimpiade per vedere gli eventi</p>
+      </div>
+    )
+  }
+
+  const tournaments = selectedOlympiadData?.tournaments || []
+
+  const handleAddTournament = async (name: string) => {
+    try {
+      await createTournament(name, 'round_robin')
+    } catch (err) {
+      alert((err as Error).message)
+    }
+  }
+
+  const handleRename = async (tournament: TournamentResponse, newName: string) => {
+    try {
+      await renameTournament(tournament.id, newName, tournament.version)
+    } catch (err) {
+      alert((err as Error).message)
+    }
+  }
+
+  const handleDelete = async (tournament: TournamentResponse) => {
+    if (!confirm(`Sei sicuro di voler eliminare "${tournament.name}"?`)) return
+    try {
+      await deleteTournament(tournament.id)
+    } catch (err) {
+      alert((err as Error).message)
+    }
+  }
 
   return (
     <div className="app-container">
-      <AddItemInput placeholder="Nuovo evento..." onAdd={addEvent} />
+      <AddItemInput placeholder="Nuovo evento..." onAdd={handleAddTournament} />
       <div className="items-list">
-        {events.slice(1).map((event, i) => (
+        {tournaments.map((tournament, i) => (
           <ItemButton
-            key={i}
-            label={event}
+            key={tournament.id}
+            label={tournament.name}
             color={COLORS[i % COLORS.length]}
-            onClick={() => selectEvent(event)}
-            onRename={(newName) => renameEvent(event, newName)}
-            onDelete={() => deleteEvent(event)}
+            onRename={(newName) => handleRename(tournament, newName)}
+            onDelete={() => handleDelete(tournament)}
           />
         ))}
       </div>
@@ -451,20 +709,55 @@ function Events() {
 
 // Players Component
 function Players() {
-  const { players, selectPlayer, addPlayer, renamePlayer, deletePlayer } = useDataStore()
+  const { selectedOlympiad, selectedOlympiadData, createPlayer, renamePlayer, deletePlayer } =
+    useDataStore()
+
+  if (!selectedOlympiad) {
+    return (
+      <div className="app-container">
+        <p className="empty-message">Seleziona un'olimpiade per vedere i giocatori</p>
+      </div>
+    )
+  }
+
+  const players = selectedOlympiadData?.players || []
+
+  const handleAddPlayer = async (name: string) => {
+    try {
+      await createPlayer(name)
+    } catch (err) {
+      alert((err as Error).message)
+    }
+  }
+
+  const handleRename = async (player: PlayerResponse, newName: string) => {
+    try {
+      await renamePlayer(player.id, newName, player.version)
+    } catch (err) {
+      alert((err as Error).message)
+    }
+  }
+
+  const handleDelete = async (player: PlayerResponse) => {
+    if (!confirm(`Sei sicuro di voler eliminare "${player.name}"?`)) return
+    try {
+      await deletePlayer(player.id)
+    } catch (err) {
+      alert((err as Error).message)
+    }
+  }
 
   return (
     <div className="app-container">
-      <AddItemInput placeholder="Nuovo giocatore..." onAdd={addPlayer} />
+      <AddItemInput placeholder="Nuovo giocatore..." onAdd={handleAddPlayer} />
       <div className="items-list">
-        {players.slice(1).map((player, i) => (
+        {players.map((player, i) => (
           <ItemButton
-            key={i}
-            label={player}
+            key={player.id}
+            label={player.name}
             color={COLORS[i % COLORS.length]}
-            onClick={() => selectPlayer(player)}
-            onRename={(newName) => renamePlayer(player, newName)}
-            onDelete={() => deletePlayer(player)}
+            onRename={(newName) => handleRename(player, newName)}
+            onDelete={() => handleDelete(player)}
           />
         ))}
       </div>
