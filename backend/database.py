@@ -16,7 +16,6 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
 
-
 def get_session():
     with Session(engine) as session:
         yield session

@@ -428,6 +428,13 @@
   font-weight: 500;
 }
 
+.modal-info-message {
+  margin: 1rem 0 1.5rem;
+  color: #2d2a4a;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
 .modal-ok-button {
   padding: 0.75rem 2.5rem;
   font-size: 1.1rem;
@@ -450,4 +457,83 @@
 .modal-ok-button:active {
   transform: translate(2px, 2px);
   box-shadow: 2px 2px 0 #2d2a4a;
+}
+
+.modal-ok-button:disabled {
+  background: #9995b0;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: 4px 4px 0 #2d2a4a;
+}
+
+/* PIN Input Modal */
+.pin-input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+  font-family: monospace;
+  font-size: 1.5rem;
+  font-weight: 700;
+  text-align: center;
+  letter-spacing: 0.5rem;
+  color: #2d2a4a;
+  background: #fff;
+  border: 3px solid #2d2a4a;
+  border-radius: 12px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.pin-input:focus {
+  border-color: #5bc0be;
+  box-shadow: 0 0 0 3px rgba(91, 192, 190, 0.3);
+}
+
+.pin-error {
+  margin: 0 0 1rem;
+  padding: 0.5rem 1rem;
+  color: #fff;
+  background: #e85d4c;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.modal-buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  margin-top: 1rem;
+}
+
+.modal-cancel-button {
+  padding: 0.75rem 2rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #2d2a4a;
+  background: #faf5eb;
+  border: 3px solid #2d2a4a;
+  border-radius: 12px;
+  cursor: pointer;
+  box-shadow: 4px 4px 0 #2d2a4a;
+  transition: all 0.15s ease;
+}
+
+.modal-cancel-button:hover {
+  background: #f0e9db;
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0 #2d2a4a;
+}
+
+.modal-cancel-button:active {
+  transform: translate(2px, 2px);
+  box-shadow: 2px 2px 0 #2d2a4a;
+}
+
+.modal-cancel-button:disabled {
+  color: #9995b0;
+  border-color: #9995b0;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: 4px 4px 0 #9995b0;
 }

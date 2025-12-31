@@ -1,6 +1,7 @@
 import random
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,11 +25,11 @@ from models import (
 
 
 # Olympiad schemas
-class OlympiadCreate(BaseModel):
+class OlympiadName(BaseModel):
     name: str
 
-
 class OlympiadSummary(BaseModel):
+    id: int
     name: str
     version: int
 
@@ -77,8 +78,8 @@ class TournamentCreate(BaseModel):
 
 
 class TournamentUpdate(BaseModel):
-    name: str | None = None
-    status: TournamentStatus | None = None
+    name: Optional[str] = None
+    status: Optional[TournamentStatus] = None
     version: int
 
 
@@ -108,14 +109,14 @@ def generate_pin() -> str:
     return f"{random.randint(0, 9999):04d}"
 
 
-def get_olympiad_by_name(session: Session, name: str) -> Olympiad:
-    olympiad = session.exec(select(Olympiad).where(Olympiad.name == name)).first()
+def get_olympiad_by_id(session: Session, olympiad_id: int) -> Olympiad:
+    olympiad = session.get(Olympiad, olympiad_id)
     if not olympiad:
         raise HTTPException(status_code=404, detail="Olympiad not found")
     return olympiad
 
 
-def check_version(entity: Olympiad | Player | Tournament, provided_version: int, entity_name: str):
+def check_version(entity: Union[Olympiad, Player, Tournament], provided_version: int, entity_name: str):
     if entity.version != provided_version:
         raise HTTPException(
             status_code=409,
@@ -231,18 +232,16 @@ app.add_middleware(
 # Olympiad Endpoints
 # =============================================================================
 
-
 @app.get("/olympiads", response_model=list[OlympiadSummary])
 def list_olympiads(session: Session = Depends(get_session)):
-    """List all olympiads with name and version."""
+    """List all olympiads with id, name and version."""
     olympiads = session.exec(select(Olympiad)).all()
-    return [OlympiadSummary(name=o.name, version=o.version) for o in olympiads]
+    return [OlympiadSummary(id=o.id, name=o.name, version=o.version) for o in olympiads]
 
-
-@app.get("/olympiads/{name}", response_model=OlympiadDetail)
-def get_olympiad(name: str, session: Session = Depends(get_session)):
+@app.get("/olympiads/{olympiad_id}", response_model=OlympiadDetail)
+def get_olympiad(olympiad_id: int, session: Session = Depends(get_session)):
     """Get full olympiad details including players and tournaments."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
     players = session.exec(select(Player).where(Player.olympiad_id == olympiad.id)).all()
     tournaments = session.exec(select(Tournament).where(Tournament.olympiad_id == olympiad.id)).all()
     return OlympiadDetail(
@@ -259,15 +258,14 @@ def get_olympiad(name: str, session: Session = Depends(get_session)):
         ],
     )
 
-
 @app.post("/olympiads", response_model=OlympiadResponse)
-def create_olympiad(data: OlympiadCreate, session: Session = Depends(get_session)):
+def create_olympiad(new_olympiad_name: OlympiadName, session: Session = Depends(get_session)):
     """Create a new olympiad."""
-    existing = session.exec(select(Olympiad).where(Olympiad.name == data.name)).first()
+    existing = session.exec(select(Olympiad).where(Olympiad.name == new_olympiad_name.name)).first()
     if existing:
-        raise HTTPException(status_code=400, detail="Olympiad name already exists")
+        raise HTTPException(status_code=400, detail="Esiste già un olimpiade con questo nome :(")
 
-    olympiad = Olympiad(name=data.name, pin=generate_pin())
+    olympiad = Olympiad(name=new_olympiad_name.name, pin=generate_pin())
     session.add(olympiad)
     session.commit()
     session.refresh(olympiad)
@@ -275,20 +273,17 @@ def create_olympiad(data: OlympiadCreate, session: Session = Depends(get_session
         id=olympiad.id, name=olympiad.name, pin=olympiad.pin, version=olympiad.version
     )
 
-
-@app.put("/olympiads/{name}", response_model=OlympiadResponse)
+@app.put("/olympiads/{olympiad_id}", response_model=OlympiadResponse)
 def update_olympiad(
-    name: str, data: OlympiadUpdate, session: Session = Depends(get_session)
+    olympiad_id: int, data: OlympiadUpdate, session: Session = Depends(get_session)
 ):
     """Update olympiad name (with optimistic locking)."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
     check_version(olympiad, data.version, "Olympiad")
 
     # Check new name doesn't conflict
     if data.name != olympiad.name:
-        existing = session.exec(
-            select(Olympiad).where(Olympiad.name == data.name)
-        ).first()
+        existing = session.exec(select(Olympiad).where(Olympiad.name == data.name)).first()
         if existing:
             raise HTTPException(status_code=400, detail="Olympiad name already exists")
 
@@ -301,16 +296,30 @@ def update_olympiad(
         id=olympiad.id, name=olympiad.name, pin=olympiad.pin, version=olympiad.version
     )
 
-
-@app.delete("/olympiads/{name}")
+@app.delete("/olympiads/{olympiad_id}")
 def delete_olympiad(
-    name: str, session: Session = Depends(get_session)
+    olympiad_id: int, session: Session = Depends(get_session)
 ):
     """Delete an olympiad and all its data."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
     session.delete(olympiad)
     session.commit()
     return {"message": "Olympiad deleted"}
+
+
+class PINVerify(BaseModel):
+    pin: str
+
+
+@app.post("/olympiads/{olympiad_id}/verify-pin")
+def verify_pin(
+    olympiad_id: int, data: PINVerify, session: Session = Depends(get_session)
+):
+    """Verify if the provided PIN matches the olympiad's PIN."""
+    olympiad = get_olympiad_by_id(session, olympiad_id)
+    if olympiad.pin == data.pin:
+        return {"valid": True}
+    return {"valid": False}
 
 
 # =============================================================================
@@ -318,10 +327,10 @@ def delete_olympiad(
 # =============================================================================
 
 
-@app.get("/olympiads/{name}/players", response_model=list[PlayerResponse])
-def list_players(name: str, session: Session = Depends(get_session)):
+@app.get("/olympiads/{olympiad_id}/players", response_model=list[PlayerResponse])
+def list_players(olympiad_id: int, session: Session = Depends(get_session)):
     """List all players in an olympiad."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
     players = session.exec(select(Player).where(Player.olympiad_id == olympiad.id)).all()
     return [
         PlayerResponse(id=p.id, name=p.name, version=p.version)
@@ -329,12 +338,12 @@ def list_players(name: str, session: Session = Depends(get_session)):
     ]
 
 
-@app.post("/olympiads/{name}/players", response_model=PlayerResponse)
+@app.post("/olympiads/{olympiad_id}/players", response_model=PlayerResponse)
 def create_player(
-    name: str, data: PlayerCreate, session: Session = Depends(get_session)
+    olympiad_id: int, data: PlayerCreate, session: Session = Depends(get_session)
 ):
     """Create a new player in an olympiad."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
 
     # Check for duplicate name
     existing = session.exec(
@@ -352,12 +361,12 @@ def create_player(
     return PlayerResponse(id=player.id, name=player.name, version=player.version)
 
 
-@app.put("/olympiads/{name}/players/{player_id}", response_model=PlayerResponse)
+@app.put("/olympiads/{olympiad_id}/players/{player_id}", response_model=PlayerResponse)
 def update_player(
-    name: str, player_id: int, data: PlayerUpdate, session: Session = Depends(get_session)
+    olympiad_id: int, player_id: int, data: PlayerUpdate, session: Session = Depends(get_session)
 ):
     """Update a player (with optimistic locking)."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
     player = session.get(Player, player_id)
     if not player or player.olympiad_id != olympiad.id:
         raise HTTPException(status_code=404, detail="Player not found")
@@ -382,12 +391,12 @@ def update_player(
     return PlayerResponse(id=player.id, name=player.name, version=player.version)
 
 
-@app.delete("/olympiads/{name}/players/{player_id}")
+@app.delete("/olympiads/{olympiad_id}/players/{player_id}")
 def delete_player(
-    name: str, player_id: int, session: Session = Depends(get_session)
+    olympiad_id: int, player_id: int, session: Session = Depends(get_session)
 ):
     """Delete a player from an olympiad."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
     player = session.get(Player, player_id)
     if not player or player.olympiad_id != olympiad.id:
         raise HTTPException(status_code=404, detail="Player not found")
@@ -402,10 +411,10 @@ def delete_player(
 # =============================================================================
 
 
-@app.get("/olympiads/{name}/tournaments", response_model=list[TournamentResponse])
-def list_tournaments(name: str, session: Session = Depends(get_session)):
+@app.get("/olympiads/{olympiad_id}/tournaments", response_model=list[TournamentResponse])
+def list_tournaments(olympiad_id: int, session: Session = Depends(get_session)):
     """List all tournaments in an olympiad."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
     tournaments = session.exec(select(Tournament).where(Tournament.olympiad_id == olympiad.id)).all()
     return [
         TournamentResponse(
@@ -415,12 +424,12 @@ def list_tournaments(name: str, session: Session = Depends(get_session)):
     ]
 
 
-@app.get("/olympiads/{name}/tournaments/{tournament_id}", response_model=TournamentDetail)
+@app.get("/olympiads/{olympiad_id}/tournaments/{tournament_id}", response_model=TournamentDetail)
 def get_tournament(
-    name: str, tournament_id: int, session: Session = Depends(get_session)
+    olympiad_id: int, tournament_id: int, session: Session = Depends(get_session)
 ):
     """Get tournament details including enrolled players."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
     tournament = session.get(Tournament, tournament_id)
     if not tournament or tournament.olympiad_id != olympiad.id:
         raise HTTPException(status_code=404, detail="Tournament not found")
@@ -445,12 +454,12 @@ def get_tournament(
     )
 
 
-@app.post("/olympiads/{name}/tournaments", response_model=TournamentResponse)
+@app.post("/olympiads/{olympiad_id}/tournaments", response_model=TournamentResponse)
 def create_tournament(
-    name: str, data: TournamentCreate, session: Session = Depends(get_session)
+    olympiad_id: int, data: TournamentCreate, session: Session = Depends(get_session)
 ):
     """Create a new tournament in an olympiad."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
 
     # Check for duplicate name
     existing = session.exec(
@@ -474,15 +483,15 @@ def create_tournament(
     )
 
 
-@app.put("/olympiads/{name}/tournaments/{tournament_id}", response_model=TournamentResponse)
+@app.put("/olympiads/{olympiad_id}/tournaments/{tournament_id}", response_model=TournamentResponse)
 def update_tournament(
-    name: str,
+    olympiad_id: int,
     tournament_id: int,
     data: TournamentUpdate,
     session: Session = Depends(get_session),
 ):
     """Update a tournament (with optimistic locking)."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
     tournament = session.get(Tournament, tournament_id)
     if not tournament or tournament.olympiad_id != olympiad.id:
         raise HTTPException(status_code=404, detail="Tournament not found")
@@ -515,12 +524,12 @@ def update_tournament(
     )
 
 
-@app.delete("/olympiads/{name}/tournaments/{tournament_id}")
+@app.delete("/olympiads/{olympiad_id}/tournaments/{tournament_id}")
 def delete_tournament(
-    name: str, tournament_id: int, session: Session = Depends(get_session)
+    olympiad_id: int, tournament_id: int, session: Session = Depends(get_session)
 ):
     """Delete a tournament."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
     tournament = session.get(Tournament, tournament_id)
     if not tournament or tournament.olympiad_id != olympiad.id:
         raise HTTPException(status_code=404, detail="Tournament not found")
@@ -535,12 +544,12 @@ def delete_tournament(
 # =============================================================================
 
 
-@app.post("/olympiads/{name}/tournaments/{tournament_id}/players/{player_id}")
+@app.post("/olympiads/{olympiad_id}/tournaments/{tournament_id}/players/{player_id}")
 def enroll_player(
-    name: str, tournament_id: int, player_id: int, session: Session = Depends(get_session)
+    olympiad_id: int, tournament_id: int, player_id: int, session: Session = Depends(get_session)
 ):
     """Enroll a player in a tournament."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
 
     tournament = session.get(Tournament, tournament_id)
     if not tournament or tournament.olympiad_id != olympiad.id:
@@ -566,12 +575,12 @@ def enroll_player(
     return {"message": "Player enrolled"}
 
 
-@app.delete("/olympiads/{name}/tournaments/{tournament_id}/players/{player_id}")
+@app.delete("/olympiads/{olympiad_id}/tournaments/{tournament_id}/players/{player_id}")
 def unenroll_player(
-    name: str, tournament_id: int, player_id: int, session: Session = Depends(get_session)
+    olympiad_id: int, tournament_id: int, player_id: int, session: Session = Depends(get_session)
 ):
     """Remove a player from a tournament."""
-    olympiad = get_olympiad_by_name(session, name)
+    olympiad = get_olympiad_by_id(session, olympiad_id)
 
     tournament = session.get(Tournament, tournament_id)
     if not tournament or tournament.olympiad_id != olympiad.id:
