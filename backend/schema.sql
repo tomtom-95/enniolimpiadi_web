@@ -65,10 +65,20 @@ CREATE TABLE IF NOT EXISTS event_teams (
 -- TOURNAMENT STRUCTURE
 -- =====================
 
+CREATE TABLE IF NOT EXISTS stage_kinds (
+    kind TEXT PRIMARY KEY,
+    label TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO stage_kinds (kind, label) VALUES
+    ('groups', 'Gironi'),
+    ('round_robin', 'Girone all''italiana'),
+    ('single_elimination', 'Eliminazione diretta');
+
 CREATE TABLE IF NOT EXISTS event_stages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK (kind IN ('round_robin', 'single_elimination')),
+    kind TEXT NOT NULL REFERENCES stage_kinds(kind),
     status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'finished')),
     stage_order INTEGER NOT NULL,
     advance_count INTEGER,  -- null for final stage

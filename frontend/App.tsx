@@ -1,58 +1,26 @@
 import { useState, useEffect } from 'react'
 import { create } from 'zustand'
 import './App.css'
-
-// Use the same hostname as the frontend, but port 8000 for the API
-const API_BASE = `http://${window.location.hostname}:8000`
+import {
+  api,
+  OlympiadSummary,
+  OlympiadCreateResponse,
+  PlayerResponse,
+  TeamResponse,
+  TeamDetail,
+  EventResponse,
+  EventDetail,
+  EventDetailWithBracket,
+  StageKindResponse,
+  StageConfig,
+  MatchResponse
+} from './api'
 
 enum Page {
   OLYMPIAD = 'olympiad',
   EVENTS   = 'events',
   PLAYERS  = 'players',
   TEAMS    = 'teams'
-}
-
-// API Types (matching backend responses)
-interface OlympiadSummary {
-  id: number
-  name: string
-}
-
-interface OlympiadCreateResponse {
-  id: number
-  name: string
-  pin: string
-}
-
-interface PlayerResponse {
-  id: number
-  name: string
-}
-
-interface TeamResponse {
-  id: number
-  name: string
-}
-
-interface TeamDetail {
-  id: number
-  name: string
-  players: PlayerResponse[]
-}
-
-interface EventResponse {
-  id: number
-  name: string
-  status: 'registration' | 'started' | 'finished'
-  score_kind: 'points' | 'outcome'
-}
-
-interface EventDetail {
-  id: number
-  name: string
-  status: 'registration' | 'started' | 'finished'
-  score_kind: 'points' | 'outcome'
-  teams: TeamResponse[]
 }
 
 // UI Types
@@ -75,6 +43,7 @@ interface DataStore {
   selectedTeam: TeamDetail | null
   events: EventResponse[]
   selectedEvent: EventDetail | null
+  selectedEventWithBracket: EventDetailWithBracket | null
   loading: boolean
   error: string | null
 
@@ -93,6 +62,11 @@ interface DataStore {
   clearSelectedTeam: () => void
   selectEvent: (event: EventDetail) => void
   clearSelectedEvent: () => void
+  selectEventWithBracket: (event: EventDetailWithBracket) => void
+  clearSelectedEventWithBracket: () => void
+
+  // Data fetching
+  fetchOlympiads: () => Promise<void>
 }
 
 // ============================================
@@ -104,6 +78,7 @@ interface UIStore {
   infoModalOpen: boolean
   infoModalTitle: string
   infoModalMessage: string
+
   // PIN modals
   showPinModal: boolean
   pinModalPin: string
@@ -111,11 +86,16 @@ interface UIStore {
   pinInputModalOpen: boolean
   pinInputModalOlympiadId: number | null
   pinInputCallback: ((pin: string) => void) | null
+
   // Create olympiad modal
   createOlympiadModalOpen: boolean
   createOlympiadName: string
   createOlympiadPin: string
-  createOlympiadCallback: ((name: string, pin: string) => void) | null
+
+  // Create event modal
+  createEventModalOpen: boolean
+  createEventName: string
+  createEventCallback: ((name: string, scoreKind: 'points' | 'outcome', stages: StageConfig[], teamIds: number[]) => void) | null
 
   setMainPage: (page: Page) => void
   toggleMenu: () => void
@@ -125,9 +105,11 @@ interface UIStore {
   closeCreatedPinModal: () => void
   requestPin: (olympiadId: number, callback: (pin: string) => void) => void
   closePinInputModal: () => void
-  openCreateOlympiadModal: (name: string, callback: (name: string, pin: string) => void) => void
+  openCreateOlympiadModal: (name: string) => void
   closeCreateOlympiadModal: () => void
   setCreateOlympiadPin: (pin: string) => void
+  openCreateEventModal: (name: string, callback: (name: string, scoreKind: 'points' | 'outcome', stages: StageConfig[], teamIds: number[]) => void) => void
+  closeCreateEventModal: () => void
 }
 
 // ============================================
@@ -146,145 +128,6 @@ const pinStorage = {
 }
 
 // ============================================
-// API LAYER - thin fetch wrappers
-// ============================================
-const api = {
-  // Olympiad endpoints
-  getOlympiads: (): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads`),
-
-  createOlympiad: (name: string, pin?: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, pin })
-    }),
-
-  renameOlympiad: (olympiadId: number, name: string, pin: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin },
-      body: JSON.stringify({ name })
-    }),
-
-  deleteOlympiad: (olympiadId: number, pin: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}`, {
-      method: 'DELETE',
-      headers: { 'X-Olympiad-PIN': pin }
-    }),
-
-  verifyPin: (olympiadId: number, pin: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/verify-pin`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pin })
-    }),
-
-  // Player endpoints
-  getPlayers: (olympiadId: number): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/players`),
-
-  createPlayer: (olympiadId: number, name: string, pin: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/players`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin },
-      body: JSON.stringify({ name })
-    }),
-
-  renamePlayer: (olympiadId: number, playerId: number, name: string, pin: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/players/${playerId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin },
-      body: JSON.stringify({ name })
-    }),
-
-  deletePlayer: (olympiadId: number, playerId: number, pin: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/players/${playerId}`, {
-      method: 'DELETE',
-      headers: { 'X-Olympiad-PIN': pin }
-    }),
-
-  // Team endpoints
-  getTeams: (olympiadId: number): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/teams`),
-
-  getTeam: (olympiadId: number, teamId: number): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/teams/${teamId}`),
-
-  createTeam: (olympiadId: number, name: string, pin: string, playerIds: number[] = []): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/teams`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin },
-      body: JSON.stringify({ name, player_ids: playerIds })
-    }),
-
-  renameTeam: (olympiadId: number, teamId: number, name: string, pin: string, playerIds: number[] = []): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/teams/${teamId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin },
-      body: JSON.stringify({ name, player_ids: playerIds })
-    }),
-
-  deleteTeam: (olympiadId: number, teamId: number, pin: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/teams/${teamId}`, {
-      method: 'DELETE',
-      headers: { 'X-Olympiad-PIN': pin }
-    }),
-
-  addPlayerToTeam: (olympiadId: number, teamId: number, playerId: number, pin: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/teams/${teamId}/players/${playerId}`, {
-      method: 'POST',
-      headers: { 'X-Olympiad-PIN': pin }
-    }),
-
-  removePlayerFromTeam: (olympiadId: number, teamId: number, playerId: number, pin: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/teams/${teamId}/players/${playerId}`, {
-      method: 'DELETE',
-      headers: { 'X-Olympiad-PIN': pin }
-    }),
-
-  // Event endpoints
-  getEvents: (olympiadId: number): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/events`),
-
-  getEvent: (olympiadId: number, eventId: number): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/events/${eventId}`),
-
-  createEvent: (olympiadId: number, name: string, scoreKind: 'points' | 'outcome', pin: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/events`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin },
-      body: JSON.stringify({ name, score_kind: scoreKind })
-    }),
-
-  updateEvent: (olympiadId: number, eventId: number, pin: string, name?: string, status?: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/events/${eventId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin },
-      body: JSON.stringify({ name, status })
-    }),
-
-  deleteEvent: (olympiadId: number, eventId: number, pin: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/events/${eventId}`, {
-      method: 'DELETE',
-      headers: { 'X-Olympiad-PIN': pin }
-    }),
-
-  enrollTeam: (olympiadId: number, eventId: number, teamId: number, pin: string, seed?: number): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/events/${eventId}/teams/${teamId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin },
-      body: JSON.stringify({ seed })
-    }),
-
-  unenrollTeam: (olympiadId: number, eventId: number, teamId: number, pin: string): Promise<Response> =>
-    fetch(`${API_BASE}/olympiads/${olympiadId}/events/${eventId}/teams/${teamId}`, {
-      method: 'DELETE',
-      headers: { 'X-Olympiad-PIN': pin }
-    })
-}
-
-// ============================================
 // DATA STORE IMPLEMENTATION
 // ============================================
 const useDataStore = create<DataStore>((set, get) => ({
@@ -295,6 +138,7 @@ const useDataStore = create<DataStore>((set, get) => ({
   selectedTeam: null,
   events: [],
   selectedEvent: null,
+  selectedEventWithBracket: null,
   selectedOlympiad: null,
   loading: false,
   error: null,
@@ -338,6 +182,22 @@ const useDataStore = create<DataStore>((set, get) => ({
 
   clearSelectedEvent: () => {
     set({ selectedEvent: null })
+  },
+
+  selectEventWithBracket: (event) => {
+    set({ selectedEventWithBracket: event })
+  },
+
+  clearSelectedEventWithBracket: () => {
+    set({ selectedEventWithBracket: null })
+  },
+
+  fetchOlympiads: async () => {
+    const res = await api.getOlympiads()
+    if (res.ok) {
+      const data: OlympiadSummary[] = await res.json()
+      set({ olympiads: data })
+    }
   }
 }))
 
@@ -359,7 +219,9 @@ const useUIStore = create<UIStore>((set) => ({
   createOlympiadModalOpen: false,
   createOlympiadName: '',
   createOlympiadPin: '',
-  createOlympiadCallback: null,
+  createEventModalOpen: false,
+  createEventName: '',
+  createEventCallback: null,
 
   setMainPage: (page) => set({ page }),
   toggleMenu: () => set((s) => ({ menuOpen: !s.menuOpen })),
@@ -369,19 +231,30 @@ const useUIStore = create<UIStore>((set) => ({
   closeCreatedPinModal: () => set({ showPinModal: false, pinModalPin: '', pinModalOlympiadName: '' }),
   requestPin: (olympiadId, callback) => set({ pinInputModalOpen: true, pinInputModalOlympiadId: olympiadId, pinInputCallback: callback }),
   closePinInputModal: () => set({ pinInputModalOpen: false, pinInputModalOlympiadId: null, pinInputCallback: null }),
-  openCreateOlympiadModal: (name, callback) => set({
+
+  openCreateOlympiadModal: (name) => set({
     createOlympiadModalOpen: true,
     createOlympiadName: name,
-    createOlympiadPin: String(Math.floor(Math.random() * 10000)).padStart(4, '0'),
-    createOlympiadCallback: callback
+    createOlympiadPin: String(Math.floor(Math.random() * 10000)).padStart(4, '0')
   }),
   closeCreateOlympiadModal: () => set({
     createOlympiadModalOpen: false,
     createOlympiadName: '',
-    createOlympiadPin: '',
-    createOlympiadCallback: null
+    createOlympiadPin: ''
   }),
-  setCreateOlympiadPin: (pin) => set({ createOlympiadPin: pin })
+
+  setCreateOlympiadPin: (pin) => set({ createOlympiadPin: pin }),
+
+  openCreateEventModal: (name, callback) => set({
+    createEventModalOpen: true,
+    createEventName: name,
+    createEventCallback: callback
+  }),
+  closeCreateEventModal: () => set({
+    createEventModalOpen: false,
+    createEventName: '',
+    createEventCallback: null
+  })
 }))
 
 // Colors for buttons
@@ -530,27 +403,39 @@ function CreateOlympiadModal() {
     createOlympiadModalOpen,
     createOlympiadName,
     createOlympiadPin,
-    createOlympiadCallback,
     closeCreateOlympiadModal,
-    setCreateOlympiadPin
+    setCreateOlympiadPin,
+    showInfoModal
   } = useUIStore()
+  
+  const {
+    olympiads, setOlympiads, fetchOlympiads
+  } = useDataStore()
+
   const [error, setError] = useState<string | null>(null)
 
-  if (!createOlympiadModalOpen) return null
+  if (!createOlympiadModalOpen) {
+    return null
+  }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     setError(null)
     if (createOlympiadPin.length !== 4 || !/^\d{4}$/.test(createOlympiadPin)) {
       setError('Il PIN deve essere di 4 cifre')
-      return
     }
-    const callback = createOlympiadCallback
-    const name = createOlympiadName
-    const pin = createOlympiadPin
-    closeCreateOlympiadModal()
-    setError(null)
-    if (callback) {
-      callback(name, pin)
+    else {
+      const res = await api.createOlympiad(createOlympiadName, createOlympiadPin)
+      if (res.ok) {
+        const data: OlympiadCreateResponse = await res.json()
+        pinStorage.setPin(data.id, data.pin)
+        setOlympiads([...olympiads, { id: data.id, name: data.name }])
+      }
+      else {
+        const errorData: { detail?: string } = await res.json()
+        showInfoModal('Errore', errorData.detail || 'Impossibile creare l\'olimpiade')
+        fetchOlympiads()
+      }
+      closeCreateOlympiadModal()
     }
   }
 
@@ -597,9 +482,186 @@ function CreateOlympiadModal() {
   )
 }
 
+// Create Event Modal - shown when creating a new event with stages
+function CreateEventModal() {
+  const { 
+    createEventModalOpen,
+    createEventName,
+    createEventCallback,
+    closeCreateEventModal
+  } = useUIStore()
+
+  const {
+    selectedOlympiad
+  } = useDataStore()
+
+  const [scoreKind, setScoreKind] = useState<'points' | 'outcome'>('outcome')
+  const [stages, setStages] = useState<StageConfig[]>([])
+  const [selectedTeamIds, setSelectedTeamIds] = useState<number[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [availablePlayers, setAvailablePlayers] = useState<PlayerResponse[]>([])
+  const [stageKinds, setStageKinds] = useState<StageKindResponse[]>([])
+
+  useEffect(() => {
+    if (createEventModalOpen) {
+      // Fetch stage kinds
+      api.getStageKinds().then(async (res) => {
+        if (res.ok) {
+          const data: StageKindResponse[] = await res.json()
+          setStageKinds(data)
+          // Initialize stages with first available kind if empty
+          if (data.length > 0 && stages.length === 0) {
+            setStages([{ kind: data[0].kind, advance_count: null }])
+          }
+        }
+      })
+    }
+  }, [createEventModalOpen])
+
+  useEffect(() => {
+    if (createEventModalOpen && selectedOlympiad) {
+      // Fetch all players (each player has a single-player team with team_id)
+      api.getPlayers(selectedOlympiad.id).then(async (res) => {
+        if (res.ok) {
+          const data: PlayerResponse[] = await res.json()
+          setAvailablePlayers(data)
+        }
+      })
+    }
+  }, [createEventModalOpen, selectedOlympiad])
+
+  if (!createEventModalOpen) return null
+
+  const handleStageKindChange = (index: number, kind: string) => {
+    const newStages = [...stages]
+    newStages[index] = { ...newStages[index], kind }
+    setStages(newStages)
+  }
+
+  const handleAddStage = () => {
+    const defaultKind = stageKinds.length > 0 ? stageKinds[0].kind : 'single_elimination'
+    setStages([...stages, { kind: defaultKind, advance_count: null }])
+  }
+
+  const handleRemoveStage = (index: number) => {
+    if (stages.length > 1) {
+      setStages(stages.filter((_, i) => i !== index))
+    }
+  }
+
+  const handlePlayerToggle = (_playerId: number, teamId: number | undefined) => {
+    if (!teamId) return
+    if (selectedTeamIds.includes(teamId)) {
+      setSelectedTeamIds(selectedTeamIds.filter(id => id !== teamId))
+    } else {
+      setSelectedTeamIds([...selectedTeamIds, teamId])
+    }
+  }
+
+  const handleSubmit = () => {
+    setError(null)
+    if (selectedTeamIds.length < 2) {
+      setError('Seleziona almeno 2 partecipanti')
+      return
+    }
+    const callback = createEventCallback
+    const name = createEventName
+    closeCreateEventModal()
+    setError(null)
+    setStages([])
+    setSelectedTeamIds([])
+    setScoreKind('outcome')
+    if (callback) {
+      callback(name, scoreKind, stages, selectedTeamIds)
+    }
+  }
+
+  const handleCancel = () => {
+    closeCreateEventModal()
+    setError(null)
+    setStages([])
+    setSelectedTeamIds([])
+    setScoreKind('outcome')
+  }
+
+  return (
+    <div className="modal-overlay">
+      <div className="modal-content event-modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Crea evento</h2>
+        <p>Nome: <strong>{createEventName}</strong></p>
+
+        <div className="event-modal-section">
+          <label>Tipo punteggio:</label>
+          <div className="score-kind-selector">
+            <button
+              className={`score-kind-btn ${scoreKind === 'outcome' ? 'active' : ''}`}
+              onClick={() => setScoreKind('outcome')}
+            >
+              Vittoria/Sconfitta
+            </button>
+            <button
+              className={`score-kind-btn ${scoreKind === 'points' ? 'active' : ''}`}
+              onClick={() => setScoreKind('points')}
+            >
+              Punteggio
+            </button>
+          </div>
+        </div>
+
+        <div className="event-modal-section">
+          <label>Fasi del torneo:</label>
+          {stages.map((stage, index) => (
+            <div key={index} className="stage-config">
+              <span className="stage-number">Fase {index + 1}:</span>
+              <select
+                value={stage.kind}
+                onChange={(e) => handleStageKindChange(index, e.target.value)}
+              >
+                {stageKinds.map((sk) => (
+                  <option key={sk.kind} value={sk.kind}>{sk.label}</option>
+                ))}
+              </select>
+              {stages.length > 1 && (
+                <button className="remove-stage-btn" onClick={() => handleRemoveStage(index)}>×</button>
+              )}
+            </div>
+          ))}
+          <button className="add-stage-btn" onClick={handleAddStage}>+ Aggiungi fase</button>
+        </div>
+
+        <div className="event-modal-section">
+          <label>Partecipanti ({selectedTeamIds.length} selezionati):</label>
+          <div className="participants-list">
+            {availablePlayers.map((player) => (
+              <label key={player.id} className="participant-checkbox">
+                <input
+                  type="checkbox"
+                  checked={player.team_id ? selectedTeamIds.includes(player.team_id) : false}
+                  onChange={() => handlePlayerToggle(player.id, player.team_id ?? undefined)}
+                />
+                <span>{player.name}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {error && <p className="pin-error">{error}</p>}
+        <div className="modal-buttons">
+          <button className="modal-cancel-button" onClick={handleCancel}>
+            Annulla
+          </button>
+          <button className="modal-ok-button" onClick={handleSubmit}>
+            Crea
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const { page } = useUIStore()
-  const { selectedEvent, selectedPlayer, selectedTeam } = useDataStore()
+  const { selectedEvent, selectedEventWithBracket, selectedPlayer, selectedTeam } = useDataStore()
 
   return (
     <div className="app-wrapper">
@@ -609,12 +671,13 @@ export default function App() {
       <PinDisplayModal />
       <PinInputModal />
       <CreateOlympiadModal />
+      <CreateEventModal />
       <main className="page-content">
         <div className="olympiad-bar">
           <OlympiadBadge />
         </div>
         {page === Page.OLYMPIAD && <Olympiads />}
-        {page === Page.EVENTS && (selectedEvent ? <EventDetailView /> : <Events />)}
+        {page === Page.EVENTS && (selectedEventWithBracket ? <BracketView /> : (selectedEvent ? <EventDetailView /> : <Events />))}
         {page === Page.PLAYERS && (selectedPlayer ? <PlayerDetail /> : <Players />)}
         {page === Page.TEAMS && (selectedTeam ? <TeamDetailView /> : <Teams />)}
       </main>
@@ -637,11 +700,12 @@ function HamburgerButton() {
 
 function SideMenu() {
   const { page, menuOpen, setMainPage } = useUIStore()
-  const { clearSelectedPlayer, clearSelectedEvent, clearSelectedTeam } = useDataStore()
+  const { clearSelectedPlayer, clearSelectedEvent, clearSelectedTeam, clearSelectedEventWithBracket } = useDataStore()
 
   const handleNavigation = (targetPage: Page) => {
     clearSelectedPlayer()
     clearSelectedEvent()
+    clearSelectedEventWithBracket()
     clearSelectedTeam()
     setMainPage(targetPage)
   }
@@ -800,36 +864,15 @@ function AddItemInput({ placeholder, onAdd }: AddItemInputProps) {
 
 // Olympiads Component
 function Olympiads() {
-  const { olympiads, setOlympiads, selectOlympiad } = useDataStore()
+  const { olympiads, selectOlympiad, fetchOlympiads } = useDataStore()
   const { showInfoModal, requestPin, openCreateOlympiadModal } = useUIStore()
-
-  const fetchOlympiads = async () => {
-    const res = await api.getOlympiads()
-    if (res.ok) {
-      const data: OlympiadSummary[] = await res.json()
-      setOlympiads(data)
-    }
-  }
 
   useEffect(() => {
     fetchOlympiads()
   }, [])
 
-  const doCreate = async (name: string, pin: string) => {
-    const res = await api.createOlympiad(name, pin)
-    if (!res.ok) {
-      const error: { detail?: string } = await res.json()
-      showInfoModal('Errore', error.detail || 'Impossibile creare l\'olimpiade')
-      fetchOlympiads()
-      return
-    }
-    const data: OlympiadCreateResponse = await res.json()
-    pinStorage.setPin(data.id, data.pin)
-    setOlympiads([...olympiads, { id: data.id, name: data.name }])
-  }
-
   const handleCreate = (name: string) => {
-    openCreateOlympiadModal(name, doCreate)
+    openCreateOlympiadModal(name)  // Just open the modal, no callback
   }
 
   const doRename = async (olympiad: OlympiadSummary, newName: string, pin: string) => {
@@ -906,8 +949,8 @@ function Olympiads() {
 
 // Events Component
 function Events() {
-  const { selectedOlympiad, events, setEvents, clearSelectedOlympiad, setOlympiads, selectEvent } = useDataStore()
-  const { setMainPage, showInfoModal, requestPin } = useUIStore()
+  const { selectedOlympiad, events, setEvents, clearSelectedOlympiad, setOlympiads, selectEventWithBracket } = useDataStore()
+  const { setMainPage, showInfoModal, requestPin, openCreateEventModal } = useUIStore()
 
   const fetchEvents = async () => {
     if (!selectedOlympiad) return
@@ -939,8 +982,14 @@ function Events() {
     )
   }
 
-  const doCreate = async (name: string, pin: string) => {
-    const res = await api.createEvent(selectedOlympiad.id, name, 'points', pin)
+  const doCreateWithStages = async (
+    name: string,
+    scoreKind: 'points' | 'outcome',
+    stages: StageConfig[],
+    teamIds: number[],
+    pin: string
+  ) => {
+    const res = await api.createEventWithStages(selectedOlympiad.id, name, scoreKind, stages, teamIds, pin)
     if (!res.ok) {
       const error: { detail?: string } = await res.json()
       if (res.status === 404) {
@@ -960,19 +1009,22 @@ function Events() {
       }
       return
     }
-    const newEvent: EventResponse = await res.json()
-    setEvents([...events, newEvent])
+    const newEvent: EventDetailWithBracket = await res.json()
+    setEvents([...events, { id: newEvent.id, name: newEvent.name, status: newEvent.status, score_kind: newEvent.score_kind }])
+    selectEventWithBracket(newEvent)
   }
 
   const handleCreate = (name: string) => {
-    const pin = pinStorage.getPin(selectedOlympiad.id)
-    if (pin) {
-      doCreate(name, pin)
-    } else {
-      requestPin(selectedOlympiad.id, (enteredPin) => {
-        doCreate(name, enteredPin)
-      })
-    }
+    openCreateEventModal(name, (eventName, scoreKind, stages, teamIds) => {
+      const pin = pinStorage.getPin(selectedOlympiad.id)
+      if (pin) {
+        doCreateWithStages(eventName, scoreKind, stages, teamIds, pin)
+      } else {
+        requestPin(selectedOlympiad.id, (enteredPin) => {
+          doCreateWithStages(eventName, scoreKind, stages, teamIds, enteredPin)
+        })
+      }
+    })
   }
 
   const doRename = async (event: EventResponse, newName: string, pin: string) => {
@@ -1027,10 +1079,10 @@ function Events() {
   }
 
   const handleSelect = async (event: EventResponse) => {
-    const res = await api.getEvent(selectedOlympiad.id, event.id)
+    const res = await api.getEventWithBracket(selectedOlympiad.id, event.id)
     if (res.ok) {
-      const detail: EventDetail = await res.json()
-      selectEvent(detail)
+      const detail: EventDetailWithBracket = await res.json()
+      selectEventWithBracket(detail)
     }
   }
 
@@ -1412,6 +1464,121 @@ function PlayerDetail() {
     <div className="app-container">
       <button className="back-button" onClick={clearSelectedPlayer}>← Torna ai giocatori</button>
       <h2 className="detail-title">{selectedPlayer!.name}</h2>
+    </div>
+  )
+}
+
+// Bracket View Component - renders single elimination bracket
+function BracketView() {
+  const { selectedEventWithBracket, clearSelectedEventWithBracket } = useDataStore()
+
+  if (!selectedEventWithBracket) return null
+
+  const statusLabel = {
+    registration: 'Iscrizioni aperte',
+    started: 'In corso',
+    finished: 'Terminato'
+  }
+
+  // Organize matches by round for single elimination
+  const organizeMatchesByRound = (matches: MatchResponse[]): MatchResponse[][] => {
+    if (matches.length === 0) return []
+
+    // Find final match (no next_match_id)
+    const finalMatch = matches.find(m => m.next_match_id === null)
+    if (!finalMatch) return [matches]
+
+    // BFS from final match backwards to organize into rounds
+    const rounds: MatchResponse[][] = []
+    let currentRound = [finalMatch]
+
+    while (currentRound.length > 0) {
+      rounds.unshift(currentRound)
+      const prevRound: MatchResponse[] = []
+
+      for (const match of currentRound) {
+        // Find matches that feed into this one
+        const feeders = matches.filter(m => m.next_match_id === match.id)
+        prevRound.push(...feeders)
+      }
+
+      currentRound = prevRound
+    }
+
+    return rounds
+  }
+
+  const singleEliminationStage = selectedEventWithBracket.stages.find(s => s.kind === 'single_elimination')
+  const rounds = singleEliminationStage ? organizeMatchesByRound(singleEliminationStage.matches) : []
+
+  const getRoundName = (roundIndex: number, totalRounds: number): string => {
+    const roundsFromEnd = totalRounds - roundIndex
+    if (roundsFromEnd === 1) return 'Finale'
+    if (roundsFromEnd === 2) return 'Semifinali'
+    if (roundsFromEnd === 3) return 'Quarti'
+    if (roundsFromEnd === 4) return 'Ottavi'
+    return `Round ${roundIndex + 1}`
+  }
+
+  return (
+    <div className="app-container bracket-container">
+      <button className="back-button" onClick={clearSelectedEventWithBracket}>← Torna agli eventi</button>
+      <h2 className="detail-title">{selectedEventWithBracket.name}</h2>
+      <p className="bracket-status">Stato: {statusLabel[selectedEventWithBracket.status]}</p>
+
+      {rounds.length > 0 ? (
+        <div className="bracket-wrapper">
+          <div className="bracket">
+            {rounds.map((round, roundIndex) => (
+              <div key={roundIndex} className="bracket-round">
+                <div className="round-header">{getRoundName(roundIndex, rounds.length)}</div>
+                <div className="round-matches">
+                  {round.map((match) => (
+                    <div key={match.id} className={`bracket-match ${match.status}`}>
+                      {match.teams.length === 0 ? (
+                        <>
+                          <div className="match-team empty">TBD</div>
+                          <div className="match-team empty">TBD</div>
+                        </>
+                      ) : match.teams.length === 1 ? (
+                        <>
+                          <div className="match-team bye">{match.teams[0].name}</div>
+                          <div className="match-team empty">BYE</div>
+                        </>
+                      ) : (
+                        match.teams.map((team, teamIndex) => (
+                          <div
+                            key={team.id}
+                            className={`match-team ${teamIndex === 0 ? 'top' : 'bottom'}`}
+                          >
+                            <span className="team-name">{team.name}</span>
+                            {team.score !== null && (
+                              <span className="team-score">{team.score}</span>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p className="empty-message">Nessun tabellone disponibile</p>
+      )}
+
+      <div className="bracket-teams-section">
+        <h3>Partecipanti:</h3>
+        <div className="bracket-teams-list">
+          {selectedEventWithBracket.teams.map((team, i) => (
+            <span key={team.id} className="bracket-team-badge" style={{ backgroundColor: COLORS[i % COLORS.length].bg, color: COLORS[i % COLORS.length].text }}>
+              {team.name}
+            </span>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }

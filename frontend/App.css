@@ -537,3 +537,321 @@
   transform: none;
   box-shadow: 4px 4px 0 #9995b0;
 }
+
+/* Event Modal */
+.event-modal {
+  width: 420px;
+  max-height: 80vh;
+  overflow-y: auto;
+  text-align: left;
+}
+
+.event-modal-section {
+  margin: 1rem 0;
+}
+
+.event-modal-section label {
+  display: block;
+  font-weight: 600;
+  color: #2d2a4a;
+  margin-bottom: 0.5rem;
+}
+
+.score-kind-selector {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.score-kind-btn {
+  flex: 1;
+  padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #2d2a4a;
+  background: #fff;
+  border: 2px solid #2d2a4a;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.score-kind-btn:hover {
+  background: #f0e9db;
+}
+
+.score-kind-btn.active {
+  background: #5bc0be;
+  color: #fff;
+  border-color: #5bc0be;
+}
+
+.stage-config {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.stage-number {
+  font-weight: 500;
+  min-width: 60px;
+}
+
+.stage-config select {
+  flex: 1;
+  padding: 0.5rem;
+  font-size: 0.9rem;
+  border: 2px solid #2d2a4a;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.remove-stage-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #e85d4c;
+  background: transparent;
+  border: 2px solid #e85d4c;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.remove-stage-btn:hover {
+  background: #e85d4c;
+  color: #fff;
+}
+
+.add-stage-btn {
+  padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #5bc0be;
+  background: transparent;
+  border: 2px dashed #5bc0be;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.add-stage-btn:hover {
+  background: rgba(91, 192, 190, 0.1);
+}
+
+.participants-list {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 2px solid #2d2a4a;
+  border-radius: 8px;
+  padding: 0.5rem;
+  background: #fff;
+}
+
+.participant-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.1s ease;
+}
+
+.participant-checkbox:hover {
+  background: #f0e9db;
+}
+
+.participant-checkbox input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.participant-checkbox span {
+  font-size: 0.95rem;
+  color: #2d2a4a;
+}
+
+/* Bracket View */
+.bracket-container {
+  padding: 1rem;
+}
+
+.bracket-status {
+  color: #9995b0;
+  margin-bottom: 1rem;
+}
+
+.bracket-wrapper {
+  overflow-x: auto;
+  padding: 1rem 0;
+}
+
+.bracket {
+  display: flex;
+  gap: 2rem;
+  min-width: fit-content;
+}
+
+.bracket-round {
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+}
+
+.round-header {
+  text-align: center;
+  font-weight: 600;
+  color: #2d2a4a;
+  padding: 0.5rem;
+  background: #5bc0be;
+  border-radius: 8px 8px 0 0;
+  border: 2px solid #2d2a4a;
+  border-bottom: none;
+}
+
+.round-matches {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  flex: 1;
+  gap: 1rem;
+  padding: 1rem 0;
+}
+
+.bracket-match {
+  display: flex;
+  flex-direction: column;
+  border: 2px solid #2d2a4a;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.bracket-match.running {
+  border-color: #ffb347;
+  box-shadow: 0 0 8px rgba(255, 179, 71, 0.5);
+}
+
+.bracket-match.finished {
+  opacity: 0.8;
+}
+
+.match-team {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9rem;
+  background: #faf5eb;
+}
+
+.match-team.top {
+  border-bottom: 1px solid #e0ddd5;
+}
+
+.match-team.empty {
+  color: #9995b0;
+  font-style: italic;
+}
+
+.match-team.bye {
+  background: #e0ffd4;
+}
+
+.team-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100px;
+}
+
+.team-score {
+  font-weight: 700;
+  color: #5bc0be;
+  background: #2d2a4a;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+.bracket-teams-section {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 2px dashed #e0ddd5;
+}
+
+.bracket-teams-section h3 {
+  color: #2d2a4a;
+  margin-bottom: 0.75rem;
+}
+
+.bracket-teams-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.bracket-team-badge {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  border-radius: 20px;
+  border: 2px solid #2d2a4a;
+}
+
+/* Back button styling */
+.back-button {
+  padding: 0.5rem 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: #2d2a4a;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.back-button:hover {
+  color: #5bc0be;
+}
+
+.detail-title {
+  color: #2d2a4a;
+  margin: 0 0 1rem 0;
+  font-size: 1.5rem;
+}
+
+.empty-message {
+  color: #9995b0;
+  font-style: italic;
+  text-align: center;
+  padding: 2rem;
+}
+
+/* PIN display */
+.pin-display {
+  font-family: monospace;
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: #2d2a4a;
+  background: #fff;
+  border: 3px solid #2d2a4a;
+  border-radius: 12px;
+  padding: 0.75rem 1.5rem;
+  letter-spacing: 0.5rem;
+  margin: 1rem 0;
+}
+
+.pin-warning {
+  color: #e85d4c;
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin: 0.5rem 0;
+}
