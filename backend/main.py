@@ -1,22 +1,14 @@
 import random
+import string
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import Optional, Union
+from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlmodel import Session, col, select
 
-from database import create_db_and_tables, engine, get_session
-from models import (
-    Olympiad,
-    Player,
-    Tournament,
-    TournamentPlayer,
-    TournamentStatus,
-    TournamentType,
-)
+from database import get_db, init_db
+import queries as q
 
 
 # =============================================================================
@@ -25,34 +17,28 @@ from models import (
 
 
 # Olympiad schemas
-class OlympiadName(BaseModel):
+class OlympiadCreate(BaseModel):
     name: str
-
-class OlympiadSummary(BaseModel):
-    id: int
-    name: str
-    version: int
-
-
-class OlympiadUpdate(BaseModel):
-    name: str
-    version: int
+    pin: Optional[str] = None
 
 
 class OlympiadResponse(BaseModel):
     id: int
     name: str
+
+
+class OlympiadCreateResponse(BaseModel):
+    id: int
+    name: str
     pin: str
-    version: int
 
 
 class OlympiadDetail(BaseModel):
     id: int
     name: str
-    pin: str
-    version: int
     players: list["PlayerResponse"]
-    tournaments: list["TournamentResponse"]
+    teams: list["TeamResponse"]
+    events: list["EventResponse"]
 
 
 # Player schemas
@@ -60,44 +46,57 @@ class PlayerCreate(BaseModel):
     name: str
 
 
-class PlayerUpdate(BaseModel):
-    name: str
-    version: int
-
-
 class PlayerResponse(BaseModel):
     id: int
     name: str
-    version: int
+    team_id: int | None = None
 
 
-# Tournament schemas
-class TournamentCreate(BaseModel):
+# Team schemas
+class TeamCreate(BaseModel):
     name: str
-    type: TournamentType
+    player_ids: list[int] = []
 
 
-class TournamentUpdate(BaseModel):
-    name: Optional[str] = None
-    status: Optional[TournamentStatus] = None
-    version: int
-
-
-class TournamentResponse(BaseModel):
+class TeamResponse(BaseModel):
     id: int
     name: str
-    type: TournamentType
-    status: TournamentStatus
-    version: int
 
 
-class TournamentDetail(BaseModel):
+class TeamDetail(BaseModel):
     id: int
     name: str
-    type: TournamentType
-    status: TournamentStatus
-    version: int
     players: list[PlayerResponse]
+
+
+# Event schemas
+class EventCreate(BaseModel):
+    name: str
+    score_kind: str  # 'points' or 'outcome'
+
+
+class EventUpdate(BaseModel):
+    name: Optional[str] = None
+    status: Optional[str] = None  # 'registration', 'started', 'finished'
+
+
+class EventResponse(BaseModel):
+    id: int
+    name: str
+    status: str
+    score_kind: str
+
+
+class EventDetail(BaseModel):
+    id: int
+    name: str
+    status: str
+    score_kind: str
+    teams: list[TeamResponse]
+
+
+class VerifyPinRequest(BaseModel):
+    pin: str
 
 
 # =============================================================================
@@ -106,103 +105,41 @@ class TournamentDetail(BaseModel):
 
 
 def generate_pin() -> str:
-    return f"{random.randint(0, 9999):04d}"
+    """Generate a random 4-digit PIN."""
+    return ''.join(random.choices(string.digits, k=4))
 
 
-def get_olympiad_by_id(session: Session, olympiad_id: int) -> Olympiad:
-    olympiad = session.get(Olympiad, olympiad_id)
-    if not olympiad:
+def verify_olympiad_pin(conn, olympiad_id: int, pin: str) -> bool:
+    """Verify if the provided PIN matches the olympiad's PIN."""
+    cursor = conn.execute(q.OLYMPIAD_VERIFY_PIN, (olympiad_id, pin))
+    return cursor.fetchone() is not None
+
+
+# =============================================================================
+# Database Dependency
+# =============================================================================
+
+
+def db_dependency():
+    """FastAPI dependency for database connection."""
+    with get_db() as conn:
+        yield conn
+
+
+def verified_olympiad(
+    olympiad_id: int,
+    x_olympiad_pin: str = Header(...),
+    conn=Depends(db_dependency)
+):
+    """Dependency that verifies the olympiad exists and PIN is valid."""
+    cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
+    if not cursor.fetchone():
         raise HTTPException(status_code=404, detail="Olympiad not found")
-    return olympiad
 
+    if not verify_olympiad_pin(conn, olympiad_id, x_olympiad_pin):
+        raise HTTPException(status_code=401, detail="Invalid PIN")
 
-def check_version(entity: Union[Olympiad, Player, Tournament], provided_version: int, entity_name: str):
-    if entity.version != provided_version:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "conflict",
-                "message": f"{entity_name} was modified by another user",
-                "current_version": entity.version,
-            },
-        )
-
-
-# =============================================================================
-# Seed Mock Data
-# =============================================================================
-
-
-def seed_mock_data():
-    """Seed the database with mock data if empty."""
-    with Session(engine) as session:
-        existing = session.exec(select(Olympiad)).first()
-        if existing:
-            return
-
-        # Create olympiads
-        olympiad1 = Olympiad(name="Enniolimpiadi2025", pin="1234")
-        olympiad2 = Olympiad(name="Enniolimpiadi2026", pin="5678")
-        session.add(olympiad1)
-        session.add(olympiad2)
-        session.commit()
-        session.refresh(olympiad1)
-        session.refresh(olympiad2)
-
-        # Create players for olympiad1
-        player_names = ["Marco", "Luca", "Giulia", "Sara", "Andrea", "Francesca"]
-        players = []
-        for name in player_names:
-            player = Player(olympiad_id=olympiad1.id, name=name)
-            session.add(player)
-            players.append(player)
-        session.commit()
-        for p in players:
-            session.refresh(p)
-
-        # Create tournaments for olympiad1
-        ping_pong = Tournament(
-            olympiad_id=olympiad1.id,
-            name="Ping Pong",
-            type=TournamentType.SINGLE_ELIMINATION,
-            status=TournamentStatus.IN_PROGRESS,
-        )
-        machiavelli = Tournament(
-            olympiad_id=olympiad1.id,
-            name="Machiavelli",
-            type=TournamentType.ROUND_ROBIN,
-            status=TournamentStatus.PENDING,
-        )
-        scopone = Tournament(
-            olympiad_id=olympiad1.id,
-            name="Scopone",
-            type=TournamentType.ROUND_ROBIN,
-            status=TournamentStatus.PENDING,
-        )
-        session.add(ping_pong)
-        session.add(machiavelli)
-        session.add(scopone)
-        session.commit()
-        session.refresh(ping_pong)
-        session.refresh(machiavelli)
-        session.refresh(scopone)
-
-        # Enroll players in tournaments
-        for player in players[:4]:
-            session.add(
-                TournamentPlayer(tournament_id=ping_pong.id, player_id=player.id)
-            )
-        for player in players:
-            session.add(
-                TournamentPlayer(tournament_id=machiavelli.id, player_id=player.id)
-            )
-        for player in [players[0], players[1], players[4], players[5]]:
-            session.add(
-                TournamentPlayer(tournament_id=scopone.id, player_id=player.id)
-            )
-        session.commit()
-
-        print("Mock data seeded successfully!")
+    return conn
 
 
 # =============================================================================
@@ -212,8 +149,7 @@ def seed_mock_data():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    create_db_and_tables()
-    seed_mock_data()
+    init_db()
     yield
 
 
@@ -232,94 +168,94 @@ app.add_middleware(
 # Olympiad Endpoints
 # =============================================================================
 
-@app.get("/olympiads", response_model=list[OlympiadSummary])
-def list_olympiads(session: Session = Depends(get_session)):
-    """List all olympiads with id, name and version."""
-    olympiads = session.exec(select(Olympiad)).all()
-    return [OlympiadSummary(id=o.id, name=o.name, version=o.version) for o in olympiads]
+
+@app.get("/olympiads", response_model=list[OlympiadResponse])
+def list_olympiads(conn=Depends(db_dependency)):
+    """List all olympiads."""
+    cursor = conn.execute(q.OLYMPIAD_LIST)
+    return [OlympiadResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
+
 
 @app.get("/olympiads/{olympiad_id}", response_model=OlympiadDetail)
-def get_olympiad(olympiad_id: int, session: Session = Depends(get_session)):
-    """Get full olympiad details including players and tournaments."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
-    players = session.exec(select(Player).where(Player.olympiad_id == olympiad.id)).all()
-    tournaments = session.exec(select(Tournament).where(Tournament.olympiad_id == olympiad.id)).all()
+def get_olympiad(olympiad_id: int, conn=Depends(db_dependency)):
+    """Get full olympiad details including players, teams, and events."""
+    cursor = conn.execute(q.OLYMPIAD_GET, (olympiad_id,))
+    olympiad = cursor.fetchone()
+    if not olympiad:
+        raise HTTPException(status_code=404, detail="Olympiad not found")
+
+    cursor = conn.execute(q.PLAYER_LIST, (olympiad_id,))
+    players = [PlayerResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
+
+    cursor = conn.execute(q.TEAM_LIST, (olympiad_id,))
+    teams = [TeamResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
+
+    cursor = conn.execute(q.EVENT_LIST, (olympiad_id,))
+    events = [
+        EventResponse(id=row["id"], name=row["name"], status=row["status"], score_kind=row["score_kind"])
+        for row in cursor.fetchall()
+    ]
+
     return OlympiadDetail(
-        id=olympiad.id,
-        name=olympiad.name,
-        pin=olympiad.pin,
-        version=olympiad.version,
-        players=[PlayerResponse(id=p.id, name=p.name, version=p.version) for p in players],
-        tournaments=[
-            TournamentResponse(
-                id=t.id, name=t.name, type=t.type, status=t.status, version=t.version
-            )
-            for t in tournaments
-        ],
+        id=olympiad["id"],
+        name=olympiad["name"],
+        players=players,
+        teams=teams,
+        events=events,
     )
 
-@app.post("/olympiads", response_model=OlympiadResponse)
-def create_olympiad(new_olympiad_name: OlympiadName, session: Session = Depends(get_session)):
-    """Create a new olympiad."""
-    existing = session.exec(select(Olympiad).where(Olympiad.name == new_olympiad_name.name)).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Esiste già un olimpiade con questo nome :(")
 
-    olympiad = Olympiad(name=new_olympiad_name.name, pin=generate_pin())
-    session.add(olympiad)
-    session.commit()
-    session.refresh(olympiad)
-    return OlympiadResponse(
-        id=olympiad.id, name=olympiad.name, pin=olympiad.pin, version=olympiad.version
-    )
+@app.post("/olympiads", response_model=OlympiadCreateResponse)
+def create_olympiad(data: OlympiadCreate, conn=Depends(db_dependency)):
+    """Create a new olympiad with a provided or generated PIN."""
+    if data.pin is not None:
+        if len(data.pin) != 4 or not data.pin.isdigit():
+            raise HTTPException(status_code=400, detail="PIN must be exactly 4 digits")
+        pin = data.pin
+    else:
+        pin = generate_pin()
 
-@app.put("/olympiads/{olympiad_id}", response_model=OlympiadResponse)
-def update_olympiad(
-    olympiad_id: int, data: OlympiadUpdate, session: Session = Depends(get_session)
-):
-    """Update olympiad name (with optimistic locking)."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
-    check_version(olympiad, data.version, "Olympiad")
-
-    # Check new name doesn't conflict
-    if data.name != olympiad.name:
-        existing = session.exec(select(Olympiad).where(Olympiad.name == data.name)).first()
-        if existing:
+    try:
+        cursor = conn.execute(q.OLYMPIAD_CREATE, (data.name, pin))
+        row = cursor.fetchone()
+        return OlympiadCreateResponse(id=row["id"], name=row["name"], pin=row["pin"])
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e):
             raise HTTPException(status_code=400, detail="Olympiad name already exists")
-
-    olympiad.name = data.name
-    olympiad.version += 1
-    olympiad.updated_at = datetime.now(timezone.utc)
-    session.commit()
-    session.refresh(olympiad)
-    return OlympiadResponse(
-        id=olympiad.id, name=olympiad.name, pin=olympiad.pin, version=olympiad.version
-    )
-
-@app.delete("/olympiads/{olympiad_id}")
-def delete_olympiad(
-    olympiad_id: int, session: Session = Depends(get_session)
-):
-    """Delete an olympiad and all its data."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
-    session.delete(olympiad)
-    session.commit()
-    return {"message": "Olympiad deleted"}
-
-
-class PINVerify(BaseModel):
-    pin: str
+        raise
 
 
 @app.post("/olympiads/{olympiad_id}/verify-pin")
-def verify_pin(
-    olympiad_id: int, data: PINVerify, session: Session = Depends(get_session)
-):
-    """Verify if the provided PIN matches the olympiad's PIN."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
-    if olympiad.pin == data.pin:
-        return {"valid": True}
-    return {"valid": False}
+def verify_pin(olympiad_id: int, data: VerifyPinRequest, conn=Depends(db_dependency)):
+    """Verify if the provided PIN is correct for the olympiad."""
+    cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Olympiad not found")
+
+    if not verify_olympiad_pin(conn, olympiad_id, data.pin):
+        raise HTTPException(status_code=401, detail="Invalid PIN")
+
+    return {"valid": True}
+
+
+@app.put("/olympiads/{olympiad_id}", response_model=OlympiadResponse)
+def update_olympiad(olympiad_id: int, data: OlympiadCreate, conn=Depends(verified_olympiad)):
+    """Update olympiad name. Requires PIN in X-Olympiad-PIN header."""
+    try:
+        cursor = conn.execute(q.OLYMPIAD_UPDATE, (data.name, olympiad_id))
+        row = cursor.fetchone()
+        return OlympiadResponse(id=row["id"], name=row["name"])
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e):
+            raise HTTPException(status_code=400, detail="Olympiad name already exists")
+        raise
+
+
+@app.delete("/olympiads/{olympiad_id}")
+def delete_olympiad(olympiad_id: int, conn=Depends(verified_olympiad)):
+    """Delete an olympiad and all its data. Requires PIN in X-Olympiad-PIN header."""
+    conn.execute(q.OLYMPIAD_DELETE, (olympiad_id,))
+    return {"message": "Olympiad deleted"}
 
 
 # =============================================================================
@@ -328,273 +264,346 @@ def verify_pin(
 
 
 @app.get("/olympiads/{olympiad_id}/players", response_model=list[PlayerResponse])
-def list_players(olympiad_id: int, session: Session = Depends(get_session)):
+def list_players(olympiad_id: int, conn=Depends(db_dependency)):
     """List all players in an olympiad."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
-    players = session.exec(select(Player).where(Player.olympiad_id == olympiad.id)).all()
-    return [
-        PlayerResponse(id=p.id, name=p.name, version=p.version)
-        for p in players
-    ]
+    cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Olympiad not found")
+
+    cursor = conn.execute(q.PLAYER_LIST, (olympiad_id,))
+    return [PlayerResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
 
 
 @app.post("/olympiads/{olympiad_id}/players", response_model=PlayerResponse)
-def create_player(
-    olympiad_id: int, data: PlayerCreate, session: Session = Depends(get_session)
-):
-    """Create a new player in an olympiad."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
+def create_player(olympiad_id: int, data: PlayerCreate, conn=Depends(verified_olympiad)):
+    """Create a new player in an olympiad. Requires PIN in X-Olympiad-PIN header."""
+    try:
+        # Create the player
+        cursor = conn.execute(q.PLAYER_CREATE, (olympiad_id, data.name))
+        player_row = cursor.fetchone()
+        player_id = player_row["id"]
+        player_name = player_row["name"]
 
-    # Check for duplicate name
-    existing = session.exec(
-        select(Player).where(
-            Player.olympiad_id == olympiad.id, Player.name == data.name
-        )
-    ).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Player name already exists")
+        # Create a single-player team with the same name
+        cursor = conn.execute(q.PLAYER_TEAM_CREATE, (olympiad_id, player_name))
+        team_row = cursor.fetchone()
+        team_id = team_row["id"]
 
-    player = Player(olympiad_id=olympiad.id, name=data.name)
-    session.add(player)
-    session.commit()
-    session.refresh(player)
-    return PlayerResponse(id=player.id, name=player.name, version=player.version)
+        # Link the player to the team
+        conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
+
+        return PlayerResponse(id=player_id, name=player_name, team_id=team_id)
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e):
+            raise HTTPException(status_code=400, detail="Player name already exists in this olympiad")
+        raise
 
 
 @app.put("/olympiads/{olympiad_id}/players/{player_id}", response_model=PlayerResponse)
-def update_player(
-    olympiad_id: int, player_id: int, data: PlayerUpdate, session: Session = Depends(get_session)
-):
-    """Update a player (with optimistic locking)."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
-    player = session.get(Player, player_id)
-    if not player or player.olympiad_id != olympiad.id:
+def update_player(olympiad_id: int, player_id: int, data: PlayerCreate, conn=Depends(verified_olympiad)):
+    """Update a player's name. Requires PIN in X-Olympiad-PIN header."""
+    cursor = conn.execute(q.PLAYER_EXISTS, (player_id, olympiad_id))
+    if not cursor.fetchone():
         raise HTTPException(status_code=404, detail="Player not found")
 
-    check_version(player, data.version, "Player")
-
-    # Check new name doesn't conflict
-    if data.name != player.name:
-        existing = session.exec(
-            select(Player).where(
-                Player.olympiad_id == olympiad.id, Player.name == data.name
-            )
-        ).first()
-        if existing:
-            raise HTTPException(status_code=400, detail="Player name already exists")
-
-    player.name = data.name
-    player.version += 1
-    player.updated_at = datetime.now(timezone.utc)
-    session.commit()
-    session.refresh(player)
-    return PlayerResponse(id=player.id, name=player.name, version=player.version)
+    try:
+        cursor = conn.execute(q.PLAYER_UPDATE, (data.name, player_id))
+        row = cursor.fetchone()
+        return PlayerResponse(id=row["id"], name=row["name"])
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e):
+            raise HTTPException(status_code=400, detail="Player name already exists in this olympiad")
+        raise
 
 
 @app.delete("/olympiads/{olympiad_id}/players/{player_id}")
-def delete_player(
-    olympiad_id: int, player_id: int, session: Session = Depends(get_session)
-):
-    """Delete a player from an olympiad."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
-    player = session.get(Player, player_id)
-    if not player or player.olympiad_id != olympiad.id:
+def delete_player(olympiad_id: int, player_id: int, conn=Depends(verified_olympiad)):
+    """Delete a player from an olympiad. Requires PIN in X-Olympiad-PIN header."""
+    cursor = conn.execute(q.PLAYER_EXISTS, (player_id, olympiad_id))
+    if not cursor.fetchone():
         raise HTTPException(status_code=404, detail="Player not found")
 
-    session.delete(player)
-    session.commit()
+    conn.execute(q.PLAYER_DELETE, (player_id,))
     return {"message": "Player deleted"}
 
 
 # =============================================================================
-# Tournament Endpoints
+# Team Endpoints
 # =============================================================================
 
 
-@app.get("/olympiads/{olympiad_id}/tournaments", response_model=list[TournamentResponse])
-def list_tournaments(olympiad_id: int, session: Session = Depends(get_session)):
-    """List all tournaments in an olympiad."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
-    tournaments = session.exec(select(Tournament).where(Tournament.olympiad_id == olympiad.id)).all()
+@app.get("/olympiads/{olympiad_id}/teams", response_model=list[TeamResponse])
+def list_teams(olympiad_id: int, conn=Depends(db_dependency)):
+    """List all teams with more than one player in an olympiad."""
+    cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Olympiad not found")
+
+    cursor = conn.execute(q.TEAM_LIST, (olympiad_id,))
+    return [TeamResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
+
+
+@app.get("/olympiads/{olympiad_id}/teams/{team_id}", response_model=TeamDetail)
+def get_team(olympiad_id: int, team_id: int, conn=Depends(db_dependency)):
+    """Get team details including players."""
+    cursor = conn.execute(q.TEAM_GET, (team_id, olympiad_id))
+    team = cursor.fetchone()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    cursor = conn.execute(q.TEAM_PLAYERS_LIST, (team_id,))
+    players = [PlayerResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
+
+    return TeamDetail(id=team["id"], name=team["name"], players=players)
+
+
+@app.post("/olympiads/{olympiad_id}/teams", response_model=TeamResponse)
+def create_team(olympiad_id: int, data: TeamCreate, conn=Depends(verified_olympiad)):
+    """Create a new team in an olympiad. Requires PIN in X-Olympiad-PIN header."""
+    try:
+        cursor = conn.execute(q.TEAM_CREATE, (olympiad_id, data.name))
+        row = cursor.fetchone()
+        team_id = row["id"]
+
+        for player_id in data.player_ids:
+            conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
+
+        return TeamResponse(id=team_id, name=row["name"])
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e):
+            raise HTTPException(status_code=400, detail="Team name already exists in this olympiad")
+        if "FOREIGN KEY constraint failed" in str(e):
+            raise HTTPException(status_code=400, detail="One or more player IDs are invalid")
+        raise
+
+
+@app.put("/olympiads/{olympiad_id}/teams/{team_id}", response_model=TeamResponse)
+def update_team(olympiad_id: int, team_id: int, data: TeamCreate, conn=Depends(verified_olympiad)):
+    """Update a team's name and players. Requires PIN in X-Olympiad-PIN header."""
+    cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    try:
+        cursor = conn.execute(q.TEAM_UPDATE, (data.name, team_id))
+        row = cursor.fetchone()
+
+        conn.execute(q.TEAM_PLAYERS_CLEAR, (team_id,))
+        for player_id in data.player_ids:
+            conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
+
+        return TeamResponse(id=row["id"], name=row["name"])
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e):
+            raise HTTPException(status_code=400, detail="Team name already exists in this olympiad")
+        if "FOREIGN KEY constraint failed" in str(e):
+            raise HTTPException(status_code=400, detail="One or more player IDs are invalid")
+        raise
+
+
+@app.delete("/olympiads/{olympiad_id}/teams/{team_id}")
+def delete_team(olympiad_id: int, team_id: int, conn=Depends(verified_olympiad)):
+    """Delete a team from an olympiad. Requires PIN in X-Olympiad-PIN header."""
+    cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    conn.execute(q.TEAM_DELETE, (team_id,))
+    return {"message": "Team deleted"}
+
+
+# =============================================================================
+# Team Player Management
+# =============================================================================
+
+
+@app.post("/olympiads/{olympiad_id}/teams/{team_id}/players/{player_id}")
+def add_player_to_team(olympiad_id: int, team_id: int, player_id: int, conn=Depends(verified_olympiad)):
+    """Add a player to a team. Requires PIN in X-Olympiad-PIN header."""
+    cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    cursor = conn.execute(q.PLAYER_EXISTS, (player_id, olympiad_id))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    try:
+        conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
+        return {"message": "Player added to team"}
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e) or "PRIMARY KEY constraint failed" in str(e):
+            raise HTTPException(status_code=400, detail="Player already in team")
+        raise
+
+
+@app.delete("/olympiads/{olympiad_id}/teams/{team_id}/players/{player_id}")
+def remove_player_from_team(olympiad_id: int, team_id: int, player_id: int, conn=Depends(verified_olympiad)):
+    """Remove a player from a team. Requires PIN in X-Olympiad-PIN header."""
+    cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    cursor = conn.execute(q.TEAM_PLAYER_EXISTS, (team_id, player_id))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Player not in team")
+
+    conn.execute(q.TEAM_PLAYER_REMOVE, (team_id, player_id))
+    return {"message": "Player removed from team"}
+
+
+# =============================================================================
+# Event Endpoints
+# =============================================================================
+
+
+@app.get("/olympiads/{olympiad_id}/events", response_model=list[EventResponse])
+def list_events(olympiad_id: int, conn=Depends(db_dependency)):
+    """List all events in an olympiad."""
+    cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Olympiad not found")
+
+    cursor = conn.execute(q.EVENT_LIST, (olympiad_id,))
     return [
-        TournamentResponse(
-            id=t.id, name=t.name, type=t.type, status=t.status, version=t.version
-        )
-        for t in tournaments
+        EventResponse(id=row["id"], name=row["name"], status=row["status"], score_kind=row["score_kind"])
+        for row in cursor.fetchall()
     ]
 
 
-@app.get("/olympiads/{olympiad_id}/tournaments/{tournament_id}", response_model=TournamentDetail)
-def get_tournament(
-    olympiad_id: int, tournament_id: int, session: Session = Depends(get_session)
-):
-    """Get tournament details including enrolled players."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
-    tournament = session.get(Tournament, tournament_id)
-    if not tournament or tournament.olympiad_id != olympiad.id:
-        raise HTTPException(status_code=404, detail="Tournament not found")
+@app.get("/olympiads/{olympiad_id}/events/{event_id}", response_model=EventDetail)
+def get_event(olympiad_id: int, event_id: int, conn=Depends(db_dependency)):
+    """Get event details including enrolled teams."""
+    cursor = conn.execute(q.EVENT_GET, (event_id, olympiad_id))
+    event = cursor.fetchone()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
 
-    # Get enrolled players through link table
-    players = session.exec(
-        select(Player)
-        .join(TournamentPlayer, col(Player.id) == col(TournamentPlayer.player_id))
-        .where(TournamentPlayer.tournament_id == tournament_id)
-    ).all()
+    cursor = conn.execute(q.EVENT_TEAMS_LIST, (event_id,))
+    teams = [TeamResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
 
-    return TournamentDetail(
-        id=tournament.id,
-        name=tournament.name,
-        type=tournament.type,
-        status=tournament.status,
-        version=tournament.version,
-        players=[
-            PlayerResponse(id=p.id, name=p.name, version=p.version)
-            for p in players
-        ],
+    return EventDetail(
+        id=event["id"],
+        name=event["name"],
+        status=event["status"],
+        score_kind=event["score_kind"],
+        teams=teams,
     )
 
 
-@app.post("/olympiads/{olympiad_id}/tournaments", response_model=TournamentResponse)
-def create_tournament(
-    olympiad_id: int, data: TournamentCreate, session: Session = Depends(get_session)
-):
-    """Create a new tournament in an olympiad."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
+@app.post("/olympiads/{olympiad_id}/events", response_model=EventResponse)
+def create_event(olympiad_id: int, data: EventCreate, conn=Depends(verified_olympiad)):
+    """Create a new event in an olympiad. Requires PIN in X-Olympiad-PIN header."""
+    if data.score_kind not in ("points", "outcome"):
+        raise HTTPException(status_code=400, detail="score_kind must be 'points' or 'outcome'")
 
-    # Check for duplicate name
-    existing = session.exec(
-        select(Tournament).where(
-            Tournament.olympiad_id == olympiad.id, Tournament.name == data.name
+    try:
+        cursor = conn.execute(q.EVENT_CREATE, (olympiad_id, data.name, data.score_kind))
+        row = cursor.fetchone()
+        return EventResponse(
+            id=row["id"], name=row["name"], status=row["status"], score_kind=row["score_kind"]
         )
-    ).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Tournament name already exists")
-
-    tournament = Tournament(olympiad_id=olympiad.id, name=data.name, type=data.type)
-    session.add(tournament)
-    session.commit()
-    session.refresh(tournament)
-    return TournamentResponse(
-        id=tournament.id,
-        name=tournament.name,
-        type=tournament.type,
-        status=tournament.status,
-        version=tournament.version,
-    )
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e):
+            raise HTTPException(status_code=400, detail="Event name already exists in this olympiad")
+        raise
 
 
-@app.put("/olympiads/{olympiad_id}/tournaments/{tournament_id}", response_model=TournamentResponse)
-def update_tournament(
+@app.put("/olympiads/{olympiad_id}/events/{event_id}", response_model=EventResponse)
+def update_event(olympiad_id: int, event_id: int, data: EventUpdate, conn=Depends(verified_olympiad)):
+    """Update an event's name or status. Requires PIN in X-Olympiad-PIN header."""
+    cursor = conn.execute(q.EVENT_GET, (event_id, olympiad_id))
+    event = cursor.fetchone()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    new_name = data.name if data.name is not None else event["name"]
+    new_status = data.status if data.status is not None else event["status"]
+
+    if new_status not in ("registration", "started", "finished"):
+        raise HTTPException(status_code=400, detail="Invalid status")
+
+    try:
+        cursor = conn.execute(q.EVENT_UPDATE, (new_name, new_status, event_id))
+        row = cursor.fetchone()
+        return EventResponse(
+            id=row["id"], name=row["name"], status=row["status"], score_kind=row["score_kind"]
+        )
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e):
+            raise HTTPException(status_code=400, detail="Event name already exists in this olympiad")
+        raise
+
+
+@app.delete("/olympiads/{olympiad_id}/events/{event_id}")
+def delete_event(olympiad_id: int, event_id: int, conn=Depends(verified_olympiad)):
+    """Delete an event. Requires PIN in X-Olympiad-PIN header."""
+    cursor = conn.execute(q.EVENT_EXISTS, (event_id, olympiad_id))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    conn.execute(q.EVENT_DELETE, (event_id,))
+    return {"message": "Event deleted"}
+
+
+# =============================================================================
+# Event Team Enrollment
+# =============================================================================
+
+
+class TeamEnrollment(BaseModel):
+    seed: Optional[int] = None
+
+
+@app.post("/olympiads/{olympiad_id}/events/{event_id}/teams/{team_id}")
+def enroll_team(
     olympiad_id: int,
-    tournament_id: int,
-    data: TournamentUpdate,
-    session: Session = Depends(get_session),
+    event_id: int,
+    team_id: int,
+    data: TeamEnrollment = TeamEnrollment(),
+    conn=Depends(verified_olympiad)
 ):
-    """Update a tournament (with optimistic locking)."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
-    tournament = session.get(Tournament, tournament_id)
-    if not tournament or tournament.olympiad_id != olympiad.id:
-        raise HTTPException(status_code=404, detail="Tournament not found")
+    """Enroll a team in an event. Requires PIN in X-Olympiad-PIN header."""
+    cursor = conn.execute(q.EVENT_EXISTS, (event_id, olympiad_id))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Event not found")
 
-    check_version(tournament, data.version, "Tournament")
+    cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Team not found")
 
-    if data.name is not None and data.name != tournament.name:
-        existing = session.exec(
-            select(Tournament).where(
-                Tournament.olympiad_id == olympiad.id, Tournament.name == data.name
-            )
-        ).first()
-        if existing:
-            raise HTTPException(status_code=400, detail="Tournament name already exists")
-        tournament.name = data.name
-
-    if data.status is not None:
-        tournament.status = data.status
-
-    tournament.version += 1
-    tournament.updated_at = datetime.now(timezone.utc)
-    session.commit()
-    session.refresh(tournament)
-    return TournamentResponse(
-        id=tournament.id,
-        name=tournament.name,
-        type=tournament.type,
-        status=tournament.status,
-        version=tournament.version,
-    )
+    try:
+        conn.execute(q.EVENT_TEAM_ENROLL, (event_id, team_id, data.seed))
+        return {"message": "Team enrolled"}
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e) or "PRIMARY KEY constraint failed" in str(e):
+            raise HTTPException(status_code=400, detail="Team already enrolled")
+        raise
 
 
-@app.delete("/olympiads/{olympiad_id}/tournaments/{tournament_id}")
-def delete_tournament(
-    olympiad_id: int, tournament_id: int, session: Session = Depends(get_session)
+@app.put("/olympiads/{olympiad_id}/events/{event_id}/teams/{team_id}")
+def update_team_enrollment(
+    olympiad_id: int,
+    event_id: int,
+    team_id: int,
+    data: TeamEnrollment,
+    conn=Depends(verified_olympiad)
 ):
-    """Delete a tournament."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
-    tournament = session.get(Tournament, tournament_id)
-    if not tournament or tournament.olympiad_id != olympiad.id:
-        raise HTTPException(status_code=404, detail="Tournament not found")
+    """Update a team's seed in an event. Requires PIN in X-Olympiad-PIN header."""
+    cursor = conn.execute(q.EVENT_TEAM_EXISTS, (event_id, team_id))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Team not enrolled in event")
 
-    session.delete(tournament)
-    session.commit()
-    return {"message": "Tournament deleted"}
+    conn.execute(q.EVENT_TEAM_UPDATE, (data.seed, event_id, team_id))
+    return {"message": "Team enrollment updated"}
 
 
-# =============================================================================
-# Tournament Player Enrollment
-# =============================================================================
+@app.delete("/olympiads/{olympiad_id}/events/{event_id}/teams/{team_id}")
+def unenroll_team(olympiad_id: int, event_id: int, team_id: int, conn=Depends(verified_olympiad)):
+    """Remove a team from an event. Requires PIN in X-Olympiad-PIN header."""
+    cursor = conn.execute(q.EVENT_TEAM_EXISTS, (event_id, team_id))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Team not enrolled in event")
 
-
-@app.post("/olympiads/{olympiad_id}/tournaments/{tournament_id}/players/{player_id}")
-def enroll_player(
-    olympiad_id: int, tournament_id: int, player_id: int, session: Session = Depends(get_session)
-):
-    """Enroll a player in a tournament."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
-
-    tournament = session.get(Tournament, tournament_id)
-    if not tournament or tournament.olympiad_id != olympiad.id:
-        raise HTTPException(status_code=404, detail="Tournament not found")
-
-    player = session.get(Player, player_id)
-    if not player or player.olympiad_id != olympiad.id:
-        raise HTTPException(status_code=404, detail="Player not found")
-
-    # Check if already enrolled
-    existing = session.exec(
-        select(TournamentPlayer).where(
-            TournamentPlayer.tournament_id == tournament_id,
-            TournamentPlayer.player_id == player_id,
-        )
-    ).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Player already enrolled")
-
-    enrollment = TournamentPlayer(tournament_id=tournament_id, player_id=player_id)
-    session.add(enrollment)
-    session.commit()
-    return {"message": "Player enrolled"}
-
-
-@app.delete("/olympiads/{olympiad_id}/tournaments/{tournament_id}/players/{player_id}")
-def unenroll_player(
-    olympiad_id: int, tournament_id: int, player_id: int, session: Session = Depends(get_session)
-):
-    """Remove a player from a tournament."""
-    olympiad = get_olympiad_by_id(session, olympiad_id)
-
-    tournament = session.get(Tournament, tournament_id)
-    if not tournament or tournament.olympiad_id != olympiad.id:
-        raise HTTPException(status_code=404, detail="Tournament not found")
-
-    enrollment = session.exec(
-        select(TournamentPlayer).where(
-            TournamentPlayer.tournament_id == tournament_id,
-            TournamentPlayer.player_id == player_id,
-        )
-    ).first()
-    if not enrollment:
-        raise HTTPException(status_code=404, detail="Player not enrolled")
-
-    session.delete(enrollment)
-    session.commit()
-    return {"message": "Player unenrolled"}
+    conn.execute(q.EVENT_TEAM_REMOVE, (event_id, team_id))
+    return {"message": "Team unenrolled"}

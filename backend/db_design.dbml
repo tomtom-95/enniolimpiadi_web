@@ -1,0 +1,203 @@
+// Use DBML to define your database structure
+// Docs: https://dbml.dbdiagram.io/docs
+
+// =====================
+// ENUMS
+// =====================
+enum event_status {
+  registration
+  started
+  finished
+}
+
+enum stage_kind {
+  round_robin
+  single_elimination
+}
+
+enum stage_status {
+  pending
+  running
+  finished
+}
+
+enum match_status {
+  pending
+  running
+  finished
+}
+
+enum match_result {
+  win
+  lose
+  draw
+}
+
+enum score_kind {
+  points    // actual numeric scores (47-32, 3-1, etc.)
+  outcome   // normalized win/lose/draw (1-0, 0-1, 1-1)
+}
+
+// =====================
+// CORE TABLES
+// =====================
+Table olympiads {
+  id integer [pk]
+  name varchar [not null, unique]
+  pin varchar[4]
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table events {
+  id integer [pk]
+  olympiad_id integer [not null, ref: > olympiads.id]
+  name varchar [not null]
+  status event_status [not null, default: 'registration']
+  score_kind score_kind [not null]
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (olympiad_id, name) [unique]
+  }
+}
+
+Table players {
+  id integer [pk]
+  olympiad_id integer [not null, ref: > olympiads.id]
+  name varchar [not null]
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (olympiad_id, name) [unique]
+  }
+}
+
+Table teams {
+  id integer [pk]
+  olympiad_id integer [not null, ref: > olympiads.id]
+  name varchar [not null]
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (olympiad_id, name) [unique]
+  }
+}
+
+Table team_players {
+  team_id integer [ref: > teams.id]
+  player_id integer [ref: > players.id]
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (team_id, player_id) [pk]
+  }
+}
+
+Table event_teams {
+  event_id integer [ref: > events.id]
+  team_id integer [ref: > teams.id]
+  seed integer
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (event_id, team_id) [pk]
+  }
+}
+
+// =====================
+// TOURNAMENT STRUCTURE
+// =====================
+Table event_stages {
+  id integer [pk]
+  event_id integer [not null, ref: > events.id]
+  kind stage_kind [not null]
+  status stage_status [not null]
+  stage_order integer [not null]
+  advance_count integer // null for final stage
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (event_id, stage_order) [unique]
+  }
+}
+
+Table groups {
+  id integer [pk]
+  event_stage_id integer [not null, ref: > event_stages.id]
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table group_teams {
+  group_id integer [ref: > groups.id]
+  team_id integer [ref: > teams.id]
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (group_id, team_id) [pk]
+  }
+}
+
+// =====================
+// MATCHES
+// =====================
+Table matches {
+  id integer [pk]
+  group_id integer [not null, ref: > groups.id]
+  status match_status [not null, default: 'pending']
+  created_at timestamp
+  updated_at timestamp
+}
+
+// NOTE: round and position are computed in the application layer
+Table bracket_matches {
+  match_id integer [pk, ref: - matches.id]
+  next_match_id integer [ref: > matches.id] // this might be null (if match_id is the final match)
+  created_at timestamp
+  updated_at timestamp
+}
+
+// =====================
+// MATCH PARTICIPATION
+// =====================
+Table match_teams {
+  match_id integer [ref: > matches.id]
+  team_id integer [ref: > teams.id]
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (match_id, team_id) [pk]
+  }
+}
+
+Table match_team_scores {
+  match_id integer
+  team_id integer
+  score integer [not null]
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (match_id, team_id) [pk]
+  }
+}
+
+Ref: match_team_scores.(match_id, team_id) - match_teams.(match_id, team_id)
+
+
+
+TODO: garantire unicità del name for teams (olympiad_id, name -> unique)
+// It can happen that teams and team_players table can have at some point
+// two instances of a player, team_players table could have 2 rows
+// (team_id, player_id): (1, 3) (2, 3) and both these rows correspond to teams with just one player
+// one way to prevent this is to enforce more than one player to inserted in a team while I am creating
+// a team
