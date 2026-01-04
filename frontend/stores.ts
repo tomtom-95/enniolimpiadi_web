@@ -34,15 +34,9 @@ interface DataStore {
   loading: boolean
   error: string | null
 
-  // Setters
-  setOlympiads: (olympiads: OlympiadSummary[]) => void
-  setPlayers: (players: PlayerResponse[]) => void
-  setTeams: (teams: TeamResponse[]) => void
-  setEvents: (events: EventResponse[]) => void
-  setLoading: (loading: boolean) => void
-  setError: (error: string | null) => void
+  // Actions
   selectOlympiad: (id: number) => void
-  clearSelectedOlympiad: () => void
+  // clearSelectedOlympiad: () => void
   selectPlayer: (id: number) => void
   clearSelectedPlayer: () => void
   selectTeam: (team: TeamDetail) => void
@@ -51,9 +45,6 @@ interface DataStore {
   clearSelectedEvent: () => void
   selectEventWithBracket: (event: EventDetailWithBracket) => void
   clearSelectedEventWithBracket: () => void
-
-  // Data fetching
-  fetchOlympiads: () => Promise<void>
 }
 
 // ============================================
@@ -84,7 +75,6 @@ interface UIStore {
   createEventName: string
   createEventCallback: ((name: string, scoreKind: 'points' | 'outcome', stages: StageConfig[], teamIds: number[]) => void) | null
 
-  setMainPage: (page: Page) => void
   toggleMenu: () => void
   showInfoModal: (title: string, message: string) => void
   closeInfoModal: () => void
@@ -130,20 +120,9 @@ export const useDataStore = create<DataStore>((set, get) => ({
   loading: false,
   error: null,
 
-  setOlympiads: (olympiads) => set({ olympiads }),
-  setPlayers: (players) => set({ players }),
-  setTeams: (teams) => set({ teams }),
-  setEvents: (events) => set({ events }),
-  setLoading: (loading) => set({ loading }),
-  setError: (error) => set({ error }),
-
   selectOlympiad: (id) => {
     const olympiad = get().olympiads.find((o) => o.id === id) || null
     set({ selectedOlympiad: olympiad })
-  },
-
-  clearSelectedOlympiad: () => {
-    set({ selectedOlympiad: null })
   },
 
   selectPlayer: (id) => {
@@ -177,14 +156,6 @@ export const useDataStore = create<DataStore>((set, get) => ({
 
   clearSelectedEventWithBracket: () => {
     set({ selectedEventWithBracket: null })
-  },
-
-  fetchOlympiads: async () => {
-    const res = await api.getOlympiads()
-    if (res.ok) {
-      const data: OlympiadSummary[] = await res.json()
-      set({ olympiads: data })
-    }
   }
 }))
 
@@ -210,7 +181,6 @@ export const useUIStore = create<UIStore>((set) => ({
   createEventName: '',
   createEventCallback: null,
 
-  setMainPage: (page) => set({ page }),
   toggleMenu: () => set((s) => ({ menuOpen: !s.menuOpen })),
   showInfoModal: (title, message) => set({ infoModalOpen: true, infoModalTitle: title, infoModalMessage: message }),
   closeInfoModal: () => set({ infoModalOpen: false, infoModalTitle: '', infoModalMessage: '' }),
@@ -243,3 +213,53 @@ export const useUIStore = create<UIStore>((set) => ({
     createEventCallback: null
   })
 }))
+
+// ============================================
+// DATA FETCHING FUNCTIONS
+// ============================================
+
+export async function fetchOlympiads(): Promise<void> {
+  const res = await api.getOlympiads()
+  if (res.ok) {
+    const data: OlympiadSummary[] = await res.json()
+    useDataStore.setState({ olympiads: data })
+  }
+}
+
+export async function fetchEvents(): Promise<void> {
+  const { selectedOlympiad } = useDataStore.getState()
+
+  if (!selectedOlympiad) {
+    return
+  }
+
+  const res = await api.getEvents(selectedOlympiad.id)
+  if (res.ok) {
+    const data: EventResponse[] = await res.json()
+    useDataStore.setState({ events: data })
+  }
+  else if (res.status === 404) {
+    useDataStore.setState({ selectedOlympiad: null })
+    useUIStore.setState({page: Page.OLYMPIAD})
+    await fetchOlympiads()
+  }
+}
+
+export async function fetchTeams(): Promise<void> {
+  const { selectedOlympiad } = useDataStore.getState()
+
+  if (!selectedOlympiad) {
+    return
+  }
+
+  const res = await api.getTeams(selectedOlympiad.id)
+  if (res.ok) {
+    const data: TeamResponse[] = await res.json()
+    useDataStore.setState({ teams: data })
+  }
+  else if (res.status === 404) {
+    useDataStore.setState({ selectedOlympiad: null })
+    useUIStore.setState({page: Page.OLYMPIAD})
+    await fetchOlympiads()
+  }
+}

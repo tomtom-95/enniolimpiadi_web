@@ -3,7 +3,6 @@ import math
 import random
 import sqlite3
 import string
-from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -13,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from database import get_db, init_db
+from database import get_connection, init_db
 import queries as q
 
 
@@ -174,11 +173,9 @@ class EventDetailWithBracket(BaseModel):
     teams: list[TeamResponse]
     stages: list[StageResponse]
 
-
 # =============================================================================
 # Helper Functions
 # =============================================================================
-
 
 def generate_pin() -> str:
     """Generate a random 4-digit PIN."""
@@ -191,7 +188,9 @@ def verify_olympiad_pin(conn, olympiad_id: int, pin: str) -> bool:
     return cursor.fetchone() is not None
 
 
-def create_single_elimination_bracket(conn, _stage_id: int, group_id: int, team_ids: list[int]) -> list[int]:
+def create_single_elimination_bracket(
+    conn, _stage_id: int, group_id: int, team_ids: list[int]
+) -> list[int]:
     """
     Create a single elimination bracket structure.
     Returns list of match IDs in bracket order.
@@ -283,51 +282,17 @@ def create_single_elimination_bracket(conn, _stage_id: int, group_id: int, team_
 
 
 # =============================================================================
-# Database Dependency
-# =============================================================================
-
-
-def db_dependency():
-    """FastAPI dependency for database connection."""
-    try:
-        with get_db() as conn:
-            yield conn
-    except Exception as e:
-        logger.error(f"Database connection error: {e}", exc_info=e)
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-def verified_olympiad(
-    olympiad_id: int,
-    x_olympiad_pin: str = Header(...),
-    conn=Depends(db_dependency)
-):
-    """Dependency that verifies the olympiad exists and PIN is valid."""
-    cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
-    if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Olympiad not found")
-
-    if not verify_olympiad_pin(conn, olympiad_id, x_olympiad_pin):
-        raise HTTPException(status_code=401, detail="Invalid PIN")
-
-    return conn
-
-
-# =============================================================================
 # App Setup
 # =============================================================================
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    try:
-        init_db()
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {e}", exc_info=e)
-    yield
+try:
+    init_db()
+except Exception as e:
+    logger.error(f"Failed to initialize database: {e}", exc_info=e)
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -364,6 +329,43 @@ def sqlite_error_handler(request: Request, exc: sqlite3.Error):
 def generic_exception_handler(request: Request, exc: Exception):
     logger.error(f"{request.url.path} - {type(exc).__name__}: {exc}", exc_info=exc)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+# =============================================================================
+# Database Dependency
+# =============================================================================
+
+def db_dependency():
+    """FastAPI dependency for database connection."""
+    conn = None
+    try:
+        conn = get_connection()
+        yield conn
+        conn.commit()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Database error: {e}", exc_info=e)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        if conn:
+            conn.close()
+
+
+def verified_olympiad(
+    olympiad_id: int,
+    x_olympiad_pin: str = Header(...),
+    conn=Depends(db_dependency)
+):
+    """Dependency that verifies the olympiad exists and PIN is valid."""
+    cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Olympiad not found")
+
+    if not verify_olympiad_pin(conn, olympiad_id, x_olympiad_pin):
+        raise HTTPException(status_code=401, detail="Invalid PIN")
+
+    return conn
 
 
 # =============================================================================
@@ -439,10 +441,10 @@ def verify_pin(olympiad_id: int, data: VerifyPinRequest, conn=Depends(db_depende
     """Verify if the provided PIN is correct for the olympiad."""
     cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
     if not cursor.fetchone():
-        return JSONResponse(status_code=404, content={"detail": "Olympiad not found"})
+        return JSONResponse(status_code=404, content={"detail": "Olimpiade non trovata"})
 
     if not verify_olympiad_pin(conn, olympiad_id, data.pin):
-        return JSONResponse(status_code=401, content={"detail": "Invalid PIN"})
+        return JSONResponse(status_code=401, content={"detail": "PIN non valido"})
 
     return {"valid": True}
 
