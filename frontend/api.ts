@@ -86,13 +86,10 @@ export interface StageConfig {
   advance_count: number | null
 }
 
-// API Layer - thin fetch wrappers
 export const api = {
-  // Stage kinds endpoint
   getStageKinds: (): Promise<Response> =>
     fetch(`${API_BASE}/stage-kinds`),
 
-  // Olympiad endpoints
   getOlympiads: (): Promise<Response> =>
     fetch(`${API_BASE}/olympiads`),
 

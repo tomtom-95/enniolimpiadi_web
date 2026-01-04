@@ -8,7 +8,8 @@ SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 def get_connection() -> sqlite3.Connection:
     """Create a new database connection with foreign keys enabled."""
-    conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
+    # conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
+    conn = sqlite3.connect("wrong/path/olympiad.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row  # Access columns by name
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

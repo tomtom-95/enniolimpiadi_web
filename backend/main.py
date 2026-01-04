@@ -1,15 +1,41 @@
+import logging
 import math
 import random
+import sqlite3
 import string
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from database import get_db, init_db
 import queries as q
+
+
+# =============================================================================
+# Logging Setup
+# =============================================================================
+
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+logger = logging.getLogger("olympiad")
+logger.setLevel(logging.ERROR)
+
+handler = RotatingFileHandler(
+    LOG_DIR / "error.log",
+    maxBytes=5 * 1024 * 1024,  # 5 MB
+    backupCount=5
+)
+handler.setFormatter(logging.Formatter(
+    "%(asctime)s - %(levelname)s - %(message)s"
+))
+logger.addHandler(handler)
 
 
 # =============================================================================
@@ -263,8 +289,12 @@ def create_single_elimination_bracket(conn, _stage_id: int, group_id: int, team_
 
 def db_dependency():
     """FastAPI dependency for database connection."""
-    with get_db() as conn:
-        yield conn
+    try:
+        with get_db() as conn:
+            yield conn
+    except Exception as e:
+        logger.error(f"Database connection error: {e}", exc_info=e)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def verified_olympiad(
@@ -290,7 +320,10 @@ def verified_olympiad(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    try:
+        init_db()
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}", exc_info=e)
     yield
 
 
@@ -303,6 +336,34 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# =============================================================================
+# Exception Handlers
+# =============================================================================
+
+
+@app.exception_handler(sqlite3.IntegrityError)
+def integrity_error_handler(request: Request, exc: sqlite3.IntegrityError):
+    error_str = str(exc)
+    logger.error(f"{request.url.path} - IntegrityError: {exc}", exc_info=exc)
+    if "UNIQUE constraint" in error_str:
+        return JSONResponse(status_code=400, content={"detail": "Resource already exists"})
+    if "FOREIGN KEY constraint" in error_str:
+        return JSONResponse(status_code=400, content={"detail": "Referenced resource not found"})
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+@app.exception_handler(sqlite3.Error)
+def sqlite_error_handler(request: Request, exc: sqlite3.Error):
+    logger.error(f"{request.url.path} - {type(exc).__name__}: {exc}", exc_info=exc)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+@app.exception_handler(Exception)
+def generic_exception_handler(request: Request, exc: Exception):
+    logger.error(f"{request.url.path} - {type(exc).__name__}: {exc}", exc_info=exc)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 # =============================================================================
@@ -335,7 +396,7 @@ def get_olympiad(olympiad_id: int, conn=Depends(db_dependency)):
     cursor = conn.execute(q.OLYMPIAD_GET, (olympiad_id,))
     olympiad = cursor.fetchone()
     if not olympiad:
-        raise HTTPException(status_code=404, detail="Olympiad not found")
+        return JSONResponse(status_code=404, content={"detail": "Olympiad not found"})
 
     cursor = conn.execute(q.PLAYER_LIST, (olympiad_id,))
     players = [PlayerResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
@@ -363,19 +424,14 @@ def create_olympiad(data: OlympiadCreate, conn=Depends(db_dependency)):
     """Create a new olympiad with a provided or generated PIN."""
     if data.pin is not None:
         if len(data.pin) != 4 or not data.pin.isdigit():
-            raise HTTPException(status_code=400, detail="PIN must be exactly 4 digits")
+            return JSONResponse(status_code=400, content={"detail": "PIN must be exactly 4 digits"})
         pin = data.pin
     else:
         pin = generate_pin()
 
-    try:
-        cursor = conn.execute(q.OLYMPIAD_CREATE, (data.name, pin))
-        row = cursor.fetchone()
-        return OlympiadCreateResponse(id=row["id"], name=row["name"], pin=row["pin"])
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e):
-            raise HTTPException(status_code=400, detail="Olympiad name already exists")
-        raise
+    cursor = conn.execute(q.OLYMPIAD_CREATE, (data.name, pin))
+    row = cursor.fetchone()
+    return OlympiadCreateResponse(id=row["id"], name=row["name"], pin=row["pin"])
 
 
 @app.post("/olympiads/{olympiad_id}/verify-pin")
@@ -383,10 +439,10 @@ def verify_pin(olympiad_id: int, data: VerifyPinRequest, conn=Depends(db_depende
     """Verify if the provided PIN is correct for the olympiad."""
     cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Olympiad not found")
+        return JSONResponse(status_code=404, content={"detail": "Olympiad not found"})
 
     if not verify_olympiad_pin(conn, olympiad_id, data.pin):
-        raise HTTPException(status_code=401, detail="Invalid PIN")
+        return JSONResponse(status_code=401, content={"detail": "Invalid PIN"})
 
     return {"valid": True}
 
@@ -394,14 +450,9 @@ def verify_pin(olympiad_id: int, data: VerifyPinRequest, conn=Depends(db_depende
 @app.put("/olympiads/{olympiad_id}", response_model=OlympiadResponse)
 def update_olympiad(olympiad_id: int, data: OlympiadCreate, conn=Depends(verified_olympiad)):
     """Update olympiad name. Requires PIN in X-Olympiad-PIN header."""
-    try:
-        cursor = conn.execute(q.OLYMPIAD_UPDATE, (data.name, olympiad_id))
-        row = cursor.fetchone()
-        return OlympiadResponse(id=row["id"], name=row["name"])
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e):
-            raise HTTPException(status_code=400, detail="Olympiad name already exists")
-        raise
+    cursor = conn.execute(q.OLYMPIAD_UPDATE, (data.name, olympiad_id))
+    row = cursor.fetchone()
+    return OlympiadResponse(id=row["id"], name=row["name"])
 
 
 @app.delete("/olympiads/{olympiad_id}")
@@ -421,7 +472,7 @@ def list_players(olympiad_id: int, conn=Depends(db_dependency)):
     """List all players in an olympiad."""
     cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Olympiad not found")
+        return JSONResponse(status_code=404, content={"detail": "Olympiad not found"})
 
     cursor = conn.execute(q.PLAYER_LIST, (olympiad_id,))
     return [PlayerResponse(id=row["id"], name=row["name"], team_id=row["team_id"]) for row in cursor.fetchall()]
@@ -430,26 +481,21 @@ def list_players(olympiad_id: int, conn=Depends(db_dependency)):
 @app.post("/olympiads/{olympiad_id}/players", response_model=PlayerResponse)
 def create_player(olympiad_id: int, data: PlayerCreate, conn=Depends(verified_olympiad)):
     """Create a new player in an olympiad. Requires PIN in X-Olympiad-PIN header."""
-    try:
-        # Create the player
-        cursor = conn.execute(q.PLAYER_CREATE, (olympiad_id, data.name))
-        player_row = cursor.fetchone()
-        player_id = player_row["id"]
-        player_name = player_row["name"]
+    # Create the player
+    cursor = conn.execute(q.PLAYER_CREATE, (olympiad_id, data.name))
+    player_row = cursor.fetchone()
+    player_id = player_row["id"]
+    player_name = player_row["name"]
 
-        # Create a single-player team with the same name
-        cursor = conn.execute(q.PLAYER_TEAM_CREATE, (olympiad_id, player_name))
-        team_row = cursor.fetchone()
-        team_id = team_row["id"]
+    # Create a single-player team with the same name
+    cursor = conn.execute(q.PLAYER_TEAM_CREATE, (olympiad_id, player_name))
+    team_row = cursor.fetchone()
+    team_id = team_row["id"]
 
-        # Link the player to the team
-        conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
+    # Link the player to the team
+    conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
 
-        return PlayerResponse(id=player_id, name=player_name, team_id=team_id)
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e):
-            raise HTTPException(status_code=400, detail="Player name already exists in this olympiad")
-        raise
+    return PlayerResponse(id=player_id, name=player_name, team_id=team_id)
 
 
 @app.put("/olympiads/{olympiad_id}/players/{player_id}", response_model=PlayerResponse)
@@ -457,16 +503,11 @@ def update_player(olympiad_id: int, player_id: int, data: PlayerCreate, conn=Dep
     """Update a player's name. Requires PIN in X-Olympiad-PIN header."""
     cursor = conn.execute(q.PLAYER_EXISTS, (player_id, olympiad_id))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Player not found")
+        return JSONResponse(status_code=404, content={"detail": "Player not found"})
 
-    try:
-        cursor = conn.execute(q.PLAYER_UPDATE, (data.name, player_id))
-        row = cursor.fetchone()
-        return PlayerResponse(id=row["id"], name=row["name"])
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e):
-            raise HTTPException(status_code=400, detail="Player name already exists in this olympiad")
-        raise
+    cursor = conn.execute(q.PLAYER_UPDATE, (data.name, player_id))
+    row = cursor.fetchone()
+    return PlayerResponse(id=row["id"], name=row["name"])
 
 
 @app.delete("/olympiads/{olympiad_id}/players/{player_id}")
@@ -474,7 +515,7 @@ def delete_player(olympiad_id: int, player_id: int, conn=Depends(verified_olympi
     """Delete a player from an olympiad. Requires PIN in X-Olympiad-PIN header."""
     cursor = conn.execute(q.PLAYER_EXISTS, (player_id, olympiad_id))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Player not found")
+        return JSONResponse(status_code=404, content={"detail": "Player not found"})
 
     conn.execute(q.PLAYER_DELETE, (player_id,))
     return {"message": "Player deleted"}
@@ -490,7 +531,7 @@ def list_teams(olympiad_id: int, conn=Depends(db_dependency)):
     """List all teams with more than one player in an olympiad."""
     cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Olympiad not found")
+        return JSONResponse(status_code=404, content={"detail": "Olympiad not found"})
 
     cursor = conn.execute(q.TEAM_LIST, (olympiad_id,))
     return [TeamResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
@@ -502,7 +543,7 @@ def get_team(olympiad_id: int, team_id: int, conn=Depends(db_dependency)):
     cursor = conn.execute(q.TEAM_GET, (team_id, olympiad_id))
     team = cursor.fetchone()
     if not team:
-        raise HTTPException(status_code=404, detail="Team not found")
+        return JSONResponse(status_code=404, content={"detail": "Team not found"})
 
     cursor = conn.execute(q.TEAM_PLAYERS_LIST, (team_id,))
     players = [PlayerResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
@@ -513,21 +554,14 @@ def get_team(olympiad_id: int, team_id: int, conn=Depends(db_dependency)):
 @app.post("/olympiads/{olympiad_id}/teams", response_model=TeamResponse)
 def create_team(olympiad_id: int, data: TeamCreate, conn=Depends(verified_olympiad)):
     """Create a new team in an olympiad. Requires PIN in X-Olympiad-PIN header."""
-    try:
-        cursor = conn.execute(q.TEAM_CREATE, (olympiad_id, data.name))
-        row = cursor.fetchone()
-        team_id = row["id"]
+    cursor = conn.execute(q.TEAM_CREATE, (olympiad_id, data.name))
+    row = cursor.fetchone()
+    team_id = row["id"]
 
-        for player_id in data.player_ids:
-            conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
+    for player_id in data.player_ids:
+        conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
 
-        return TeamResponse(id=team_id, name=row["name"])
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e):
-            raise HTTPException(status_code=400, detail="Team name already exists in this olympiad")
-        if "FOREIGN KEY constraint failed" in str(e):
-            raise HTTPException(status_code=400, detail="One or more player IDs are invalid")
-        raise
+    return TeamResponse(id=team_id, name=row["name"])
 
 
 @app.put("/olympiads/{olympiad_id}/teams/{team_id}", response_model=TeamResponse)
@@ -535,23 +569,16 @@ def update_team(olympiad_id: int, team_id: int, data: TeamCreate, conn=Depends(v
     """Update a team's name and players. Requires PIN in X-Olympiad-PIN header."""
     cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Team not found")
+        return JSONResponse(status_code=404, content={"detail": "Team not found"})
 
-    try:
-        cursor = conn.execute(q.TEAM_UPDATE, (data.name, team_id))
-        row = cursor.fetchone()
+    cursor = conn.execute(q.TEAM_UPDATE, (data.name, team_id))
+    row = cursor.fetchone()
 
-        conn.execute(q.TEAM_PLAYERS_CLEAR, (team_id,))
-        for player_id in data.player_ids:
-            conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
+    conn.execute(q.TEAM_PLAYERS_CLEAR, (team_id,))
+    for player_id in data.player_ids:
+        conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
 
-        return TeamResponse(id=row["id"], name=row["name"])
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e):
-            raise HTTPException(status_code=400, detail="Team name already exists in this olympiad")
-        if "FOREIGN KEY constraint failed" in str(e):
-            raise HTTPException(status_code=400, detail="One or more player IDs are invalid")
-        raise
+    return TeamResponse(id=row["id"], name=row["name"])
 
 
 @app.delete("/olympiads/{olympiad_id}/teams/{team_id}")
@@ -559,7 +586,7 @@ def delete_team(olympiad_id: int, team_id: int, conn=Depends(verified_olympiad))
     """Delete a team from an olympiad. Requires PIN in X-Olympiad-PIN header."""
     cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Team not found")
+        return JSONResponse(status_code=404, content={"detail": "Team not found"})
 
     conn.execute(q.TEAM_DELETE, (team_id,))
     return {"message": "Team deleted"}
@@ -575,19 +602,14 @@ def add_player_to_team(olympiad_id: int, team_id: int, player_id: int, conn=Depe
     """Add a player to a team. Requires PIN in X-Olympiad-PIN header."""
     cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Team not found")
+        return JSONResponse(status_code=404, content={"detail": "Team not found"})
 
     cursor = conn.execute(q.PLAYER_EXISTS, (player_id, olympiad_id))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Player not found")
+        return JSONResponse(status_code=404, content={"detail": "Player not found"})
 
-    try:
-        conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
-        return {"message": "Player added to team"}
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e) or "PRIMARY KEY constraint failed" in str(e):
-            raise HTTPException(status_code=400, detail="Player already in team")
-        raise
+    conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
+    return {"message": "Player added to team"}
 
 
 @app.delete("/olympiads/{olympiad_id}/teams/{team_id}/players/{player_id}")
@@ -595,11 +617,11 @@ def remove_player_from_team(olympiad_id: int, team_id: int, player_id: int, conn
     """Remove a player from a team. Requires PIN in X-Olympiad-PIN header."""
     cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Team not found")
+        return JSONResponse(status_code=404, content={"detail": "Team not found"})
 
     cursor = conn.execute(q.TEAM_PLAYER_EXISTS, (team_id, player_id))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Player not in team")
+        return JSONResponse(status_code=404, content={"detail": "Player not in team"})
 
     conn.execute(q.TEAM_PLAYER_REMOVE, (team_id, player_id))
     return {"message": "Player removed from team"}
@@ -615,7 +637,7 @@ def list_events(olympiad_id: int, conn=Depends(db_dependency)):
     """List all events in an olympiad."""
     cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Olympiad not found")
+        return JSONResponse(status_code=404, content={"detail": "Olympiad not found"})
 
     cursor = conn.execute(q.EVENT_LIST, (olympiad_id,))
     return [
@@ -630,7 +652,7 @@ def get_event(olympiad_id: int, event_id: int, conn=Depends(db_dependency)):
     cursor = conn.execute(q.EVENT_GET, (event_id, olympiad_id))
     event = cursor.fetchone()
     if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
+        return JSONResponse(status_code=404, content={"detail": "Event not found"})
 
     cursor = conn.execute(q.EVENT_TEAMS_LIST, (event_id,))
     teams = [TeamResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
@@ -648,18 +670,13 @@ def get_event(olympiad_id: int, event_id: int, conn=Depends(db_dependency)):
 def create_event(olympiad_id: int, data: EventCreate, conn=Depends(verified_olympiad)):
     """Create a new event in an olympiad. Requires PIN in X-Olympiad-PIN header."""
     if data.score_kind not in ("points", "outcome"):
-        raise HTTPException(status_code=400, detail="score_kind must be 'points' or 'outcome'")
+        return JSONResponse(status_code=400, content={"detail": "score_kind must be 'points' or 'outcome'"})
 
-    try:
-        cursor = conn.execute(q.EVENT_CREATE, (olympiad_id, data.name, data.score_kind))
-        row = cursor.fetchone()
-        return EventResponse(
-            id=row["id"], name=row["name"], status=row["status"], score_kind=row["score_kind"]
-        )
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e):
-            raise HTTPException(status_code=400, detail="Event name already exists in this olympiad")
-        raise
+    cursor = conn.execute(q.EVENT_CREATE, (olympiad_id, data.name, data.score_kind))
+    row = cursor.fetchone()
+    return EventResponse(
+        id=row["id"], name=row["name"], status=row["status"], score_kind=row["score_kind"]
+    )
 
 
 @app.put("/olympiads/{olympiad_id}/events/{event_id}", response_model=EventResponse)
@@ -668,24 +685,19 @@ def update_event(olympiad_id: int, event_id: int, data: EventUpdate, conn=Depend
     cursor = conn.execute(q.EVENT_GET, (event_id, olympiad_id))
     event = cursor.fetchone()
     if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
+        return JSONResponse(status_code=404, content={"detail": "Event not found"})
 
     new_name = data.name if data.name is not None else event["name"]
     new_status = data.status if data.status is not None else event["status"]
 
     if new_status not in ("registration", "started", "finished"):
-        raise HTTPException(status_code=400, detail="Invalid status")
+        return JSONResponse(status_code=400, content={"detail": "Invalid status"})
 
-    try:
-        cursor = conn.execute(q.EVENT_UPDATE, (new_name, new_status, event_id))
-        row = cursor.fetchone()
-        return EventResponse(
-            id=row["id"], name=row["name"], status=row["status"], score_kind=row["score_kind"]
-        )
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e):
-            raise HTTPException(status_code=400, detail="Event name already exists in this olympiad")
-        raise
+    cursor = conn.execute(q.EVENT_UPDATE, (new_name, new_status, event_id))
+    row = cursor.fetchone()
+    return EventResponse(
+        id=row["id"], name=row["name"], status=row["status"], score_kind=row["score_kind"]
+    )
 
 
 @app.delete("/olympiads/{olympiad_id}/events/{event_id}")
@@ -693,7 +705,7 @@ def delete_event(olympiad_id: int, event_id: int, conn=Depends(verified_olympiad
     """Delete an event. Requires PIN in X-Olympiad-PIN header."""
     cursor = conn.execute(q.EVENT_EXISTS, (event_id, olympiad_id))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Event not found")
+        return JSONResponse(status_code=404, content={"detail": "Event not found"})
 
     conn.execute(q.EVENT_DELETE, (event_id,))
     return {"message": "Event deleted"}
@@ -719,19 +731,14 @@ def enroll_team(
     """Enroll a team in an event. Requires PIN in X-Olympiad-PIN header."""
     cursor = conn.execute(q.EVENT_EXISTS, (event_id, olympiad_id))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Event not found")
+        return JSONResponse(status_code=404, content={"detail": "Event not found"})
 
     cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Team not found")
+        return JSONResponse(status_code=404, content={"detail": "Team not found"})
 
-    try:
-        conn.execute(q.EVENT_TEAM_ENROLL, (event_id, team_id, data.seed))
-        return {"message": "Team enrolled"}
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e) or "PRIMARY KEY constraint failed" in str(e):
-            raise HTTPException(status_code=400, detail="Team already enrolled")
-        raise
+    conn.execute(q.EVENT_TEAM_ENROLL, (event_id, team_id, data.seed))
+    return {"message": "Team enrolled"}
 
 
 @app.put("/olympiads/{olympiad_id}/events/{event_id}/teams/{team_id}")
@@ -743,9 +750,10 @@ def update_team_enrollment(
     conn=Depends(verified_olympiad)
 ):
     """Update a team's seed in an event. Requires PIN in X-Olympiad-PIN header."""
+    _ = olympiad_id  # Used by verified_olympiad dependency
     cursor = conn.execute(q.EVENT_TEAM_EXISTS, (event_id, team_id))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Team not enrolled in event")
+        return JSONResponse(status_code=404, content={"detail": "Team not enrolled in event"})
 
     conn.execute(q.EVENT_TEAM_UPDATE, (data.seed, event_id, team_id))
     return {"message": "Team enrollment updated"}
@@ -754,9 +762,10 @@ def update_team_enrollment(
 @app.delete("/olympiads/{olympiad_id}/events/{event_id}/teams/{team_id}")
 def unenroll_team(olympiad_id: int, event_id: int, team_id: int, conn=Depends(verified_olympiad)):
     """Remove a team from an event. Requires PIN in X-Olympiad-PIN header."""
+    _ = olympiad_id  # Used by verified_olympiad dependency
     cursor = conn.execute(q.EVENT_TEAM_EXISTS, (event_id, team_id))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Team not enrolled in event")
+        return JSONResponse(status_code=404, content={"detail": "Team not enrolled in event"})
 
     conn.execute(q.EVENT_TEAM_REMOVE, (event_id, team_id))
     return {"message": "Team unenrolled"}
@@ -775,116 +784,110 @@ def create_event_with_stages(olympiad_id: int, data: EventCreateWithStages, conn
     Requires PIN in X-Olympiad-PIN header.
     """
     if data.score_kind not in ("points", "outcome"):
-        raise HTTPException(status_code=400, detail="score_kind must be 'points' or 'outcome'")
+        return JSONResponse(status_code=400, content={"detail": "score_kind must be 'points' or 'outcome'"})
 
     if not data.stages:
-        raise HTTPException(status_code=400, detail="At least one stage is required")
+        return JSONResponse(status_code=400, content={"detail": "At least one stage is required"})
 
     if len(data.team_ids) < 2:
-        raise HTTPException(status_code=400, detail="At least 2 teams are required")
+        return JSONResponse(status_code=400, content={"detail": "At least 2 teams are required"})
 
     # Validate all teams exist
     for team_id in data.team_ids:
         cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
         if not cursor.fetchone():
-            raise HTTPException(status_code=404, detail=f"Team {team_id} not found")
+            return JSONResponse(status_code=404, content={"detail": f"Team {team_id} not found"})
 
-    try:
-        # Create event
-        cursor = conn.execute(q.EVENT_CREATE, (olympiad_id, data.name, data.score_kind))
-        event_row = cursor.fetchone()
-        event_id = event_row["id"]
+    # Get valid stage kinds
+    cursor = conn.execute(q.STAGE_KINDS_LIST)
+    valid_kinds = [row["kind"] for row in cursor.fetchall()]
 
-        # Enroll all teams in the event
-        for idx, team_id in enumerate(data.team_ids):
-            conn.execute(q.EVENT_TEAM_ENROLL, (event_id, team_id, idx))
+    # Validate stage kinds before creating anything
+    for stage_config in data.stages:
+        if stage_config.kind not in valid_kinds:
+            return JSONResponse(status_code=400, content={"detail": f"Invalid stage kind: {stage_config.kind}"})
 
-        stages_response = []
+    # Create event
+    cursor = conn.execute(q.EVENT_CREATE, (olympiad_id, data.name, data.score_kind))
+    event_row = cursor.fetchone()
+    event_id = event_row["id"]
 
-        # Get valid stage kinds
-        cursor = conn.execute(q.STAGE_KINDS_LIST)
-        valid_kinds = [row["kind"] for row in cursor.fetchall()]
+    # Enroll all teams in the event
+    for idx, team_id in enumerate(data.team_ids):
+        conn.execute(q.EVENT_TEAM_ENROLL, (event_id, team_id, idx))
 
-        # Create stages
-        for stage_order, stage_config in enumerate(data.stages):
-            if stage_config.kind not in valid_kinds:
-                raise HTTPException(status_code=400, detail=f"Invalid stage kind: {stage_config.kind}")
+    stages_response = []
 
-            # Create the stage
-            cursor = conn.execute(q.STAGE_CREATE, (
-                event_id,
-                stage_config.kind,
-                stage_order,
-                stage_config.advance_count
-            ))
-            stage_id = cursor.fetchone()["id"]
+    # Create stages
+    for stage_order, stage_config in enumerate(data.stages):
+        # Create the stage
+        cursor = conn.execute(q.STAGE_CREATE, (
+            event_id,
+            stage_config.kind,
+            stage_order,
+            stage_config.advance_count
+        ))
+        stage_id = cursor.fetchone()["id"]
 
-            # Create a group for the stage
-            cursor = conn.execute(q.GROUP_CREATE, (stage_id,))
-            group_id = cursor.fetchone()["id"]
+        # Create a group for the stage
+        cursor = conn.execute(q.GROUP_CREATE, (stage_id,))
+        group_id = cursor.fetchone()["id"]
 
-            # Add teams to group
-            for team_id in data.team_ids:
-                conn.execute(q.GROUP_TEAM_ADD, (group_id, team_id))
+        # Add teams to group
+        for team_id in data.team_ids:
+            conn.execute(q.GROUP_TEAM_ADD, (group_id, team_id))
 
-            matches_response = []
+        matches_response = []
 
-            # Create bracket structure for single elimination
-            if stage_config.kind == "single_elimination":
-                match_ids = create_single_elimination_bracket(conn, stage_id, group_id, data.team_ids)
+        # Create bracket structure for single elimination
+        if stage_config.kind == "single_elimination":
+            match_ids = create_single_elimination_bracket(conn, stage_id, group_id, data.team_ids)
 
-                # Get match details for response
-                for match_id in match_ids:
-                    cursor = conn.execute(q.MATCH_GET, (match_id,))
-                    match_row = cursor.fetchone()
+            # Get match details for response
+            for match_id in match_ids:
+                cursor = conn.execute(q.MATCH_GET, (match_id,))
+                match_row = cursor.fetchone()
 
-                    cursor = conn.execute(q.BRACKET_MATCH_GET, (match_id,))
-                    bracket_row = cursor.fetchone()
+                cursor = conn.execute(q.BRACKET_MATCH_GET, (match_id,))
+                bracket_row = cursor.fetchone()
 
-                    cursor = conn.execute(q.MATCH_TEAMS_LIST, (match_id,))
-                    match_teams = []
-                    for team_row in cursor.fetchall():
-                        match_teams.append(MatchTeamResponse(
-                            id=team_row["id"],
-                            name=team_row["name"],
-                            score=None
-                        ))
-
-                    matches_response.append(MatchResponse(
-                        id=match_id,
-                        status=match_row["status"],
-                        teams=match_teams,
-                        next_match_id=bracket_row["next_match_id"] if bracket_row else None
+                cursor = conn.execute(q.MATCH_TEAMS_LIST, (match_id,))
+                match_teams = []
+                for team_row in cursor.fetchall():
+                    match_teams.append(MatchTeamResponse(
+                        id=team_row["id"],
+                        name=team_row["name"],
+                        score=None
                     ))
 
-            stages_response.append(StageResponse(
-                id=stage_id,
-                kind=stage_config.kind,
-                status="pending",
-                stage_order=stage_order,
-                advance_count=stage_config.advance_count,
-                matches=matches_response
-            ))
+                matches_response.append(MatchResponse(
+                    id=match_id,
+                    status=match_row["status"],
+                    teams=match_teams,
+                    next_match_id=bracket_row["next_match_id"] if bracket_row else None
+                ))
 
-        # Get enrolled teams
-        cursor = conn.execute(q.EVENT_TEAMS_LIST, (event_id,))
-        teams = [TeamResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
+        stages_response.append(StageResponse(
+            id=stage_id,
+            kind=stage_config.kind,
+            status="pending",
+            stage_order=stage_order,
+            advance_count=stage_config.advance_count,
+            matches=matches_response
+        ))
 
-        return EventDetailWithBracket(
-            id=event_id,
-            name=event_row["name"],
-            status=event_row["status"],
-            score_kind=event_row["score_kind"],
-            teams=teams,
-            stages=stages_response
-        )
+    # Get enrolled teams
+    cursor = conn.execute(q.EVENT_TEAMS_LIST, (event_id,))
+    teams = [TeamResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e):
-            raise HTTPException(status_code=400, detail="Event name already exists in this olympiad")
-        raise
+    return EventDetailWithBracket(
+        id=event_id,
+        name=event_row["name"],
+        status=event_row["status"],
+        score_kind=event_row["score_kind"],
+        teams=teams,
+        stages=stages_response
+    )
 
 
 @app.get("/olympiads/{olympiad_id}/events/{event_id}/bracket", response_model=EventDetailWithBracket)
@@ -893,7 +896,7 @@ def get_event_with_bracket(olympiad_id: int, event_id: int, conn=Depends(db_depe
     cursor = conn.execute(q.EVENT_GET, (event_id, olympiad_id))
     event = cursor.fetchone()
     if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
+        return JSONResponse(status_code=404, content={"detail": "Event not found"})
 
     # Get enrolled teams
     cursor = conn.execute(q.EVENT_TEAMS_LIST, (event_id,))
