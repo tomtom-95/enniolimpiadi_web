@@ -12,7 +12,7 @@ import {
   StageConfig,
   MatchResponse
 } from './api'
-import { Page, useDataStore, useUIStore, pinStorage, fetchOlympiads, fetchEvents, fetchTeams } from './stores'
+import { Page, useDataStore, useUIStore, pinStorage, fetchOlympiads, fetchEvents, fetchTeams, fetchPlayers } from './stores'
 
 // UI Types
 interface ColorScheme {
@@ -65,41 +65,13 @@ function InfoModal() {
   )
 }
 
-// PIN Display Modal - shown after olympiad creation
-function PinDisplayModal() {
-  const {
-    showPinModal,
-    pinModalPin,
-    pinModalOlympiadName,
-    closeCreatedPinModal
-  } = useUIStore()
-
-  if (!showPinModal) return null
-
-  return (
-    <div className="modal-overlay">
-      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-        <h2>Olimpiade creata</h2>
-        <p>L'olimpiade "{pinModalOlympiadName}" e' stata creata.</p>
-        <p>Il PIN per modificare questa olimpiade e':</p>
-        <p className="pin-display">{pinModalPin}</p>
-        <p className="pin-warning">Conserva questo PIN! Ti servira' per modificare l'olimpiade.</p>
-        <button className="modal-ok-button" onClick={closeCreatedPinModal}>
-          OK
-        </button>
-      </div>
-    </div>
-  )
-}
-
 // PIN Input Modal - shown when PIN is needed
 function PinInputModal() {
   const {
-    pinInputModalOpen,
-    pinInputModalOlympiadId,
-    pinInputCallback,
-    closePinInputModal
+    pinInputModalOpen, pinInputModalOlympiadId,
+    pinInputCallback, closePinInputModal, showInfoModal
   } = useUIStore()
+
   const [pinValue, setPinValue] = useState('')
   const [error, setError] = useState<string | null>(null)
 
@@ -115,7 +87,6 @@ function PinInputModal() {
     // Verify PIN with backend
     const res = await api.verifyPin(pinInputModalOlympiadId, pinValue)
     if (res.ok) {
-      // Store PIN and call callback
       pinStorage.setPin(pinInputModalOlympiadId, pinValue)
       const callback = pinInputCallback
       closePinInputModal()
@@ -124,8 +95,21 @@ function PinInputModal() {
       if (callback) {
         callback(pinValue)
       }
-    } else {
-      setError('PIN non valido')
+    }
+    else if (res.status === 404) {
+      // Olympiad was deleted - show info modal, then close and refresh
+      closePinInputModal()
+      setPinValue('')
+      setError(null)
+      useDataStore.setState({ selectedOlympiad: null })
+      useUIStore.setState({ page: Page.OLYMPIAD })
+      showInfoModal('Olimpiade non trovata', 'Questa olimpiade è stata eliminata da un altro admin')
+      fetchOlympiads()
+    }
+    else {
+      // 401 or other error - show error message
+      const errorData: { detail?: string } = await res.json()
+      setError(errorData.detail || 'Errore durante la verifica del PIN')
     }
   }
 
@@ -174,15 +158,7 @@ function PinInputModal() {
 
 // Create Olympiad Modal - shown when creating a new olympiad
 function CreateOlympiadModal() {
-  const {
-    createOlympiadModalOpen,
-    createOlympiadName,
-    createOlympiadPin,
-    closeCreateOlympiadModal,
-    setCreateOlympiadPin,
-    showInfoModal
-  } = useUIStore()
-  
+  const { createOlympiadModalOpen, createOlympiadName, createOlympiadPin, closeCreateOlympiadModal, setCreateOlympiadPin, showInfoModal } = useUIStore()
   const { olympiads } = useDataStore()
 
   const [error, setError] = useState<string | null>(null)
@@ -257,16 +233,8 @@ function CreateOlympiadModal() {
 
 // Create Event Modal - shown when creating a new event with stages
 function CreateEventModal() {
-  const { 
-    createEventModalOpen,
-    createEventName,
-    createEventCallback,
-    closeCreateEventModal
-  } = useUIStore()
-
-  const {
-    selectedOlympiad
-  } = useDataStore()
+  const { createEventModalOpen, createEventName, createEventCallback, closeCreateEventModal } = useUIStore()
+  const { selectedOlympiad } = useDataStore()
 
   const [scoreKind, setScoreKind] = useState<'points' | 'outcome'>('outcome')
   const [stages, setStages] = useState<StageConfig[]>([])
@@ -441,8 +409,6 @@ export default function App() {
       <HamburgerButton />
       <SideMenu />
       <InfoModal />
-      <PinDisplayModal />
-      <PinInputModal />
       <CreateOlympiadModal />
       <CreateEventModal />
       <main className="page-content">
@@ -473,14 +439,10 @@ function HamburgerButton() {
 
 function SideMenu() {
   const { page, menuOpen } = useUIStore()
-  const { clearSelectedPlayer, clearSelectedEvent, clearSelectedTeam, clearSelectedEventWithBracket } = useDataStore()
 
   const handleNavigation = (targetPage: Page) => {
-    clearSelectedPlayer()
-    clearSelectedEvent()
-    clearSelectedEventWithBracket()
-    clearSelectedTeam()
-    useUIStore.setState({page: targetPage})
+    useDataStore.setState({ selectedPlayer: null, selectedEvent: null, selectedEventWithBracket: null, selectedTeam: null })
+    useUIStore.setState({ page: targetPage })
   }
 
   return (
@@ -710,6 +672,7 @@ function Olympiads() {
 
   return (
     <div className="app-container">
+      <PinInputModal />
       <AddItemInput
         placeholder="Nuova olimpiade..."
         onAdd={(name) => openCreateOlympiadModal(name)}
@@ -738,17 +701,8 @@ function Olympiads() {
 
 // Events Component
 function Events() {
-  const {
-    selectedOlympiad,
-    events,
-    selectEventWithBracket
-  } = useDataStore()
-
-  const {
-    showInfoModal,
-    requestPin,
-    openCreateEventModal
-  } = useUIStore()
+  const { selectedOlympiad, events } = useDataStore()
+  const { showInfoModal, requestPin, openCreateEventModal } = useUIStore()
 
   useEffect(() => {
     if (selectedOlympiad) {
@@ -793,8 +747,10 @@ function Events() {
       return
     }
     const newEvent: EventDetailWithBracket = await res.json()
-    useDataStore.setState({ events: [...events, { id: newEvent.id, name: newEvent.name, status: newEvent.status, score_kind: newEvent.score_kind }] })
-    selectEventWithBracket(newEvent)
+    useDataStore.setState({
+      events: [...events, { id: newEvent.id, name: newEvent.name, status: newEvent.status, score_kind: newEvent.score_kind }],
+      selectedEventWithBracket: newEvent
+    })
   }
 
   const handleCreate = (name: string) => {
@@ -814,12 +770,13 @@ function Events() {
     const res = await api.getEventWithBracket(selectedOlympiad.id, event.id)
     if (res.ok) {
       const detail: EventDetailWithBracket = await res.json()
-      selectEventWithBracket(detail)
+      useDataStore.setState({ selectedEventWithBracket: detail })
     }
   }
 
   return (
     <div className="app-container">
+      <PinInputModal />
       <AddItemInput placeholder="Nuovo evento..." onAdd={handleCreate} />
       <div className="items-list">
         {events.map((event, i) => (
@@ -844,7 +801,7 @@ function Events() {
 
 // Teams Component
 function Teams() {
-  const { selectedOlympiad, teams, selectTeam } = useDataStore()
+  const { selectedOlympiad, teams } = useDataStore()
   const { showInfoModal, requestPin } = useUIStore()
 
   useEffect(() => {
@@ -899,12 +856,13 @@ function Teams() {
     const res = await api.getTeam(selectedOlympiad.id, team.id)
     if (res.ok) {
       const detail: TeamDetail = await res.json()
-      selectTeam(detail)
+      useDataStore.setState({ selectedTeam: detail })
     }
   }
 
   return (
     <div className="app-container">
+      <PinInputModal />
       <AddItemInput placeholder="Nuova squadra..." onAdd={handleCreate} />
       <div className="items-list">
         {teams.map((team, i) => (
@@ -932,24 +890,6 @@ function Players() {
   const { selectedOlympiad, players, selectPlayer } = useDataStore()
   const { showInfoModal, requestPin } = useUIStore()
 
-  const fetchPlayers = async () => {
-    if (!selectedOlympiad) {
-      return
-    }
-    const res = await api.getPlayers(selectedOlympiad.id)
-    if (res.ok) {
-      const data: PlayerResponse[] = await res.json()
-      useDataStore.setState({ players: data })
-    } else if (res.status === 404) {
-      useDataStore.setState({selectedOlympiad: null})
-      useUIStore.setState({ page: Page.OLYMPIAD })
-      const olympiadsRes = await api.getOlympiads()
-      if (olympiadsRes.ok) {
-        useDataStore.setState({ olympiads: await olympiadsRes.json() })
-      }
-    }
-  }
-
   useEffect(() => {
     if (selectedOlympiad) {
       fetchPlayers()
@@ -972,10 +912,7 @@ function Players() {
         useDataStore.setState({selectedOlympiad: null})
         useUIStore.setState({ page: Page.OLYMPIAD })
         showInfoModal('Olimpiade non trovata', 'Questa olimpiade è stata eliminata.')
-        const olympiadsRes = await api.getOlympiads()
-        if (olympiadsRes.ok) {
-          useDataStore.setState({ olympiads: await olympiadsRes.json() })
-        }
+        fetchOlympiads()
       }
       else if (res.status === 401) {
         pinStorage.removePin(selectedOlympiad.id)
@@ -1004,6 +941,7 @@ function Players() {
 
   return (
     <div className="app-container">
+      <PinInputModal />
       <AddItemInput placeholder="Nuovo giocatore..." onAdd={handleCreate} />
       <div className="items-list">
         {players.map((player, i) => (
@@ -1028,7 +966,7 @@ function Players() {
 
 // Event Detail Component
 function EventDetailView() {
-  const { selectedEvent, clearSelectedEvent } = useDataStore()
+  const { selectedEvent } = useDataStore()
 
   if (!selectedEvent) return null
 
@@ -1045,7 +983,7 @@ function EventDetailView() {
 
   return (
     <div className="app-container">
-      <button className="back-button" onClick={clearSelectedEvent}>← Torna agli eventi</button>
+      <button className="back-button" onClick={() => useDataStore.setState({ selectedEvent: null })}>← Torna agli eventi</button>
       <h2 className="detail-title">{selectedEvent.name}</h2>
       <p>Stato: {statusLabel[selectedEvent.status]}</p>
       <p>Tipo punteggio: {scoreKindLabel[selectedEvent.score_kind]}</p>
@@ -1065,13 +1003,13 @@ function EventDetailView() {
 
 // Team Detail Component
 function TeamDetailView() {
-  const { selectedTeam, clearSelectedTeam } = useDataStore()
+  const { selectedTeam } = useDataStore()
 
   if (!selectedTeam) return null
 
   return (
     <div className="app-container">
-      <button className="back-button" onClick={clearSelectedTeam}>← Torna alle squadre</button>
+      <button className="back-button" onClick={() => useDataStore.setState({ selectedTeam: null })}>← Torna alle squadre</button>
       <h2 className="detail-title">{selectedTeam.name}</h2>
       <h3>Giocatori:</h3>
       {selectedTeam.players.length === 0 ? (
@@ -1089,11 +1027,11 @@ function TeamDetailView() {
 
 // Player Detail Component
 function PlayerDetail() {
-  const { selectedPlayer, clearSelectedPlayer } = useDataStore()
+  const { selectedPlayer } = useDataStore()
 
   return (
     <div className="app-container">
-      <button className="back-button" onClick={clearSelectedPlayer}>← Torna ai giocatori</button>
+      <button className="back-button" onClick={() => useDataStore.setState({ selectedPlayer: null })}>← Torna ai giocatori</button>
       <h2 className="detail-title">{selectedPlayer!.name}</h2>
     </div>
   )
@@ -1101,7 +1039,7 @@ function PlayerDetail() {
 
 // Bracket View Component - renders single elimination bracket
 function BracketView() {
-  const { selectedEventWithBracket, clearSelectedEventWithBracket } = useDataStore()
+  const { selectedEventWithBracket } = useDataStore()
 
   if (!selectedEventWithBracket) return null
 
@@ -1153,7 +1091,7 @@ function BracketView() {
 
   return (
     <div className="app-container bracket-container">
-      <button className="back-button" onClick={clearSelectedEventWithBracket}>← Torna agli eventi</button>
+      <button className="back-button" onClick={() => useDataStore.setState({ selectedEventWithBracket: null })}>← Torna agli eventi</button>
       <h2 className="detail-title">{selectedEventWithBracket.name}</h2>
       <p className="bracket-status">Stato: {statusLabel[selectedEventWithBracket.status]}</p>
 

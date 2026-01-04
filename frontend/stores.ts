@@ -36,15 +36,7 @@ interface DataStore {
 
   // Actions
   selectOlympiad: (id: number) => void
-  // clearSelectedOlympiad: () => void
   selectPlayer: (id: number) => void
-  clearSelectedPlayer: () => void
-  selectTeam: (team: TeamDetail) => void
-  clearSelectedTeam: () => void
-  selectEvent: (event: EventDetail) => void
-  clearSelectedEvent: () => void
-  selectEventWithBracket: (event: EventDetailWithBracket) => void
-  clearSelectedEventWithBracket: () => void
 }
 
 // ============================================
@@ -58,9 +50,6 @@ interface UIStore {
   infoModalMessage: string
 
   // PIN modals
-  showPinModal: boolean
-  pinModalPin: string
-  pinModalOlympiadName: string
   pinInputModalOpen: boolean
   pinInputModalOlympiadId: number | null
   pinInputCallback: ((pin: string) => void) | null
@@ -78,8 +67,6 @@ interface UIStore {
   toggleMenu: () => void
   showInfoModal: (title: string, message: string) => void
   closeInfoModal: () => void
-  showCreatedPinModal: (olympiadName: string, pin: string) => void
-  closeCreatedPinModal: () => void
   requestPin: (olympiadId: number, callback: (pin: string) => void) => void
   closePinInputModal: () => void
   openCreateOlympiadModal: (name: string) => void
@@ -110,13 +97,14 @@ export const pinStorage = {
 export const useDataStore = create<DataStore>((set, get) => ({
   olympiads: [],
   players: [],
-  selectedPlayer: null,
   teams: [],
-  selectedTeam: null,
   events: [],
+  selectedOlympiad: null,
+  selectedPlayer: null,
+  selectedTeam: null,
   selectedEvent: null,
   selectedEventWithBracket: null,
-  selectedOlympiad: null,
+
   loading: false,
   error: null,
 
@@ -128,34 +116,6 @@ export const useDataStore = create<DataStore>((set, get) => ({
   selectPlayer: (id) => {
     const player = get().players.find((p) => p.id === id) || null
     set({ selectedPlayer: player })
-  },
-
-  clearSelectedPlayer: () => {
-    set({ selectedPlayer: null })
-  },
-
-  selectTeam: (team) => {
-    set({ selectedTeam: team })
-  },
-
-  clearSelectedTeam: () => {
-    set({ selectedTeam: null })
-  },
-
-  selectEvent: (event) => {
-    set({ selectedEvent: event })
-  },
-
-  clearSelectedEvent: () => {
-    set({ selectedEvent: null })
-  },
-
-  selectEventWithBracket: (event) => {
-    set({ selectedEventWithBracket: event })
-  },
-
-  clearSelectedEventWithBracket: () => {
-    set({ selectedEventWithBracket: null })
   }
 }))
 
@@ -165,18 +125,19 @@ export const useDataStore = create<DataStore>((set, get) => ({
 export const useUIStore = create<UIStore>((set) => ({
   page: Page.OLYMPIAD,
   menuOpen: false,
+
   infoModalOpen: false,
   infoModalTitle: '',
   infoModalMessage: '',
-  showPinModal: false,
-  pinModalPin: '',
-  pinModalOlympiadName: '',
+
   pinInputModalOpen: false,
   pinInputModalOlympiadId: null,
   pinInputCallback: null,
+
   createOlympiadModalOpen: false,
   createOlympiadName: '',
   createOlympiadPin: '',
+
   createEventModalOpen: false,
   createEventName: '',
   createEventCallback: null,
@@ -184,8 +145,6 @@ export const useUIStore = create<UIStore>((set) => ({
   toggleMenu: () => set((s) => ({ menuOpen: !s.menuOpen })),
   showInfoModal: (title, message) => set({ infoModalOpen: true, infoModalTitle: title, infoModalMessage: message }),
   closeInfoModal: () => set({ infoModalOpen: false, infoModalTitle: '', infoModalMessage: '' }),
-  showCreatedPinModal: (olympiadName, pin) => set({ showPinModal: true, pinModalOlympiadName: olympiadName, pinModalPin: pin }),
-  closeCreatedPinModal: () => set({ showPinModal: false, pinModalPin: '', pinModalOlympiadName: '' }),
   requestPin: (olympiadId, callback) => set({ pinInputModalOpen: true, pinInputModalOlympiadId: olympiadId, pinInputCallback: callback }),
   closePinInputModal: () => set({ pinInputModalOpen: false, pinInputModalOlympiadId: null, pinInputCallback: null }),
 
@@ -224,6 +183,12 @@ export async function fetchOlympiads(): Promise<void> {
     const data: OlympiadSummary[] = await res.json()
     useDataStore.setState({ olympiads: data })
   }
+  else {
+    useUIStore.getState().showInfoModal(
+      'Errore del server',
+      'Si è verificato un errore durante il caricamento delle olimpiadi. Riprova più tardi.'
+    )
+  }
 }
 
 export async function fetchEvents(): Promise<void> {
@@ -260,6 +225,25 @@ export async function fetchTeams(): Promise<void> {
   else if (res.status === 404) {
     useDataStore.setState({ selectedOlympiad: null })
     useUIStore.setState({page: Page.OLYMPIAD})
+    await fetchOlympiads()
+  }
+}
+
+export async function fetchPlayers(): Promise<void> {
+  const { selectedOlympiad } = useDataStore.getState()
+
+  if (!selectedOlympiad) {
+    return
+  }
+
+  const res = await api.getPlayers(selectedOlympiad.id)
+  if (res.ok) {
+    const data: PlayerResponse[] = await res.json()
+    useDataStore.setState({ players: data })
+  }
+  else if (res.status === 404) {
+    useDataStore.setState({ selectedOlympiad: null })
+    useUIStore.setState({ page: Page.OLYMPIAD })
     await fetchOlympiads()
   }
 }
