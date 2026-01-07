@@ -7,7 +7,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -23,18 +23,29 @@ import queries as q
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
+log_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+# Backend logger
 logger = logging.getLogger("olympiad")
 logger.setLevel(logging.ERROR)
-
-handler = RotatingFileHandler(
-    LOG_DIR / "error.log",
+backend_handler = RotatingFileHandler(
+    LOG_DIR / "backend.log",
     maxBytes=5 * 1024 * 1024,  # 5 MB
     backupCount=5
 )
-handler.setFormatter(logging.Formatter(
-    "%(asctime)s - %(levelname)s - %(message)s"
-))
-logger.addHandler(handler)
+backend_handler.setFormatter(log_formatter)
+logger.addHandler(backend_handler)
+
+# Frontend logger
+frontend_logger = logging.getLogger("frontend")
+frontend_logger.setLevel(logging.ERROR)
+frontend_handler = RotatingFileHandler(
+    LOG_DIR / "frontend.log",
+    maxBytes=5 * 1024 * 1024,  # 5 MB
+    backupCount=5
+)
+frontend_handler.setFormatter(log_formatter)
+frontend_logger.addHandler(frontend_handler)
 
 
 # =============================================================================
@@ -48,20 +59,33 @@ class OlympiadCreate(BaseModel):
     pin: Optional[str] = None
 
 
+class OlympiadRename(BaseModel):
+    name: str
+
+
+class OlympiadListItem(BaseModel):
+    id: int
+    name: str
+    version: int
+
+
 class OlympiadResponse(BaseModel):
     id: int
     name: str
+    version: int
 
 
 class OlympiadCreateResponse(BaseModel):
     id: int
     name: str
     pin: str
+    version: int
 
 
 class OlympiadDetail(BaseModel):
     id: int
     name: str
+    version: int
     players: list["PlayerResponse"]
     teams: list["TeamResponse"]
     events: list["EventResponse"]
@@ -131,6 +155,15 @@ class StageKindResponse(BaseModel):
     label: str
 
 
+# Logging schemas
+class FrontendLogRequest(BaseModel):
+    level: str  # 'error', 'warn', 'info'
+    message: str
+    stack: Optional[str] = None
+    url: Optional[str] = None
+    userAgent: Optional[str] = None
+
+
 class StageConfig(BaseModel):
     kind: str  # 'round_robin' or 'single_elimination'
     advance_count: Optional[int] = None
@@ -182,7 +215,7 @@ def generate_pin() -> str:
     return ''.join(random.choices(string.digits, k=4))
 
 
-def verify_olympiad_pin(conn, olympiad_id: int, pin: str) -> bool:
+def verify_olympiad_pin(conn, olympiad_id: int, pin: Optional[str]) -> bool:
     """Verify if the provided PIN matches the olympiad's PIN."""
     cursor = conn.execute(q.OLYMPIAD_VERIFY_PIN, (olympiad_id, pin))
     return cursor.fetchone() is not None
@@ -313,23 +346,16 @@ def integrity_error_handler(request: Request, exc: sqlite3.IntegrityError):
     error_str = str(exc)
     logger.error(f"{request.url.path} - IntegrityError: {exc}", exc_info=exc)
     if "UNIQUE constraint" in error_str:
-        return JSONResponse(status_code=400, content={"detail": "Resource already exists"})
+        raise HTTPException(status_code=409, detail="Resource already exists")
     if "FOREIGN KEY constraint" in error_str:
-        return JSONResponse(status_code=400, content={"detail": "Referenced resource not found"})
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+        raise HTTPException(status_code=400, detail="Referenced resource not found")
+    raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.exception_handler(sqlite3.Error)
 def sqlite_error_handler(request: Request, exc: sqlite3.Error):
     logger.error(f"{request.url.path} - {type(exc).__name__}: {exc}", exc_info=exc)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
-
-
-@app.exception_handler(Exception)
-def generic_exception_handler(request: Request, exc: Exception):
-    logger.error(f"{request.url.path} - {type(exc).__name__}: {exc}", exc_info=exc)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
-
+    raise HTTPException(status_code=500, detail="Internal server error")
 
 # =============================================================================
 # Database Dependency
@@ -342,11 +368,16 @@ def db_dependency():
         conn = get_connection()
         yield conn
         conn.commit()
+    except HTTPException:
+        raise
+    except sqlite3.Error:
+        if conn:
+            conn.rollback()
+        raise
     except Exception as e:
         if conn:
             conn.rollback()
-        logger.error(f"Database error: {e}", exc_info=e)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Unhandle exception: {e}", exc_info=e)
     finally:
         if conn:
             conn.close()
@@ -360,10 +391,10 @@ def verified_olympiad(
     """Dependency that verifies the olympiad exists and PIN is valid."""
     cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
     if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Olympiad not found")
+        raise HTTPException(status_code=404, detail="Olimpiade non trovata")
 
     if not verify_olympiad_pin(conn, olympiad_id, x_olympiad_pin):
-        raise HTTPException(status_code=401, detail="Invalid PIN")
+        raise HTTPException(status_code=401, detail="PIN non valido")
 
     return conn
 
@@ -380,25 +411,48 @@ def list_stage_kinds(conn=Depends(db_dependency)):
     return [StageKindResponse(kind=row["kind"], label=row["label"]) for row in cursor.fetchall()]
 
 
+@app.post("/log")
+def log_frontend_error(log_request: FrontendLogRequest):
+    """Log frontend errors to frontend.log file."""
+    parts = [log_request.message]
+    if log_request.url:
+        parts.append(f"URL: {log_request.url}")
+    if log_request.stack:
+        parts.append(f"Stack: {log_request.stack}")
+    if log_request.userAgent:
+        parts.append(f"UserAgent: {log_request.userAgent}")
+
+    log_message = " | ".join(parts)
+
+    if log_request.level == "error":
+        frontend_logger.error(log_message)
+    elif log_request.level == "warn":
+        frontend_logger.warning(log_message)
+    else:
+        frontend_logger.info(log_message)
+
+    return {"status": "logged"}
+
+
 # =============================================================================
 # Olympiad Endpoints
 # =============================================================================
 
 
-@app.get("/olympiads", response_model=list[OlympiadResponse])
+@app.get("/olympiads", response_model=list[OlympiadListItem])
 def list_olympiads(conn=Depends(db_dependency)):
     """List all olympiads."""
     cursor = conn.execute(q.OLYMPIAD_LIST)
-    return [OlympiadResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
+    return [OlympiadListItem(id=row["id"], name=row["name"], version=row["version"]) for row in cursor.fetchall()]
 
 
 @app.get("/olympiads/{olympiad_id}", response_model=OlympiadDetail)
-def get_olympiad(olympiad_id: int, conn=Depends(db_dependency)):
+def get_olympiad(olympiad_id: int, response: Response, conn=Depends(db_dependency)):
     """Get full olympiad details including players, teams, and events."""
     cursor = conn.execute(q.OLYMPIAD_GET, (olympiad_id,))
     olympiad = cursor.fetchone()
     if not olympiad:
-        return JSONResponse(status_code=404, content={"detail": "Olympiad not found"})
+        raise HTTPException(status_code=404, detail="Olympiad not found")
 
     cursor = conn.execute(q.PLAYER_LIST, (olympiad_id,))
     players = [PlayerResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
@@ -412,28 +466,31 @@ def get_olympiad(olympiad_id: int, conn=Depends(db_dependency)):
         for row in cursor.fetchall()
     ]
 
+    response.headers["ETag"] = f'"{olympiad["version"]}"'
     return OlympiadDetail(
         id=olympiad["id"],
         name=olympiad["name"],
+        version=olympiad["version"],
         players=players,
         teams=teams,
         events=events,
     )
 
 
-@app.post("/olympiads", response_model=OlympiadCreateResponse)
-def create_olympiad(data: OlympiadCreate, conn=Depends(db_dependency)):
+@app.post("/olympiads", response_model=OlympiadCreateResponse, status_code=201)
+def create_olympiad(data: OlympiadCreate, response: Response, conn=Depends(db_dependency)):
     """Create a new olympiad with a provided or generated PIN."""
     if data.pin is not None:
         if len(data.pin) != 4 or not data.pin.isdigit():
-            return JSONResponse(status_code=400, content={"detail": "PIN must be exactly 4 digits"})
+            raise HTTPException(status_code=400, detail="PIN must be exactly 4 digits")
         pin = data.pin
     else:
         pin = generate_pin()
 
     cursor = conn.execute(q.OLYMPIAD_CREATE, (data.name, pin))
     row = cursor.fetchone()
-    return OlympiadCreateResponse(id=row["id"], name=row["name"], pin=row["pin"])
+    response.headers["ETag"] = f'"{row["version"]}"'
+    return OlympiadCreateResponse(id=row["id"], name=row["name"], pin=row["pin"], version=row["version"])
 
 
 @app.post("/olympiads/{olympiad_id}/verify-pin")
@@ -450,18 +507,52 @@ def verify_pin(olympiad_id: int, data: VerifyPinRequest, conn=Depends(db_depende
 
 
 @app.put("/olympiads/{olympiad_id}", response_model=OlympiadResponse)
-def update_olympiad(olympiad_id: int, data: OlympiadCreate, conn=Depends(verified_olympiad)):
-    """Update olympiad name. Requires PIN in X-Olympiad-PIN header."""
-    cursor = conn.execute(q.OLYMPIAD_UPDATE, (data.name, olympiad_id))
+def update_olympiad(
+    olympiad_id: int,
+    data: OlympiadRename,
+    response: Response,
+    if_match: Optional[str] = Header(None, alias="If-Match"),
+    conn=Depends(verified_olympiad)
+):
+    """Update olympiad name. Requires PIN in X-Olympiad-PIN header and If-Match for optimistic locking."""
+    if if_match is None:
+        raise HTTPException(status_code=428, detail="If-Match header is required")
+
+    try:
+        version = int(if_match.strip('"'))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid If-Match header format")
+
+    cursor = conn.execute(q.OLYMPIAD_UPDATE, (data.name, olympiad_id, version))
     row = cursor.fetchone()
-    return OlympiadResponse(id=row["id"], name=row["name"])
+    if not row:
+        raise HTTPException(status_code=412, detail="Precondition Failed - resource has been modified")
+
+    response.headers["ETag"] = f'"{row["version"]}"'
+    return OlympiadResponse(id=row["id"], name=row["name"], version=row["version"])
 
 
-@app.delete("/olympiads/{olympiad_id}")
-def delete_olympiad(olympiad_id: int, conn=Depends(verified_olympiad)):
-    """Delete an olympiad and all its data. Requires PIN in X-Olympiad-PIN header."""
-    conn.execute(q.OLYMPIAD_DELETE, (olympiad_id,))
-    return {"message": "Olympiad deleted"}
+@app.delete("/olympiads/{olympiad_id}", status_code=204)
+def delete_olympiad(
+    olympiad_id: int,
+    if_match: Optional[str] = Header(None, alias="If-Match"),
+    conn=Depends(verified_olympiad)
+):
+    """Delete an olympiad and all its data. Requires PIN in X-Olympiad-PIN header and If-Match for optimistic locking."""
+    if if_match is None:
+        raise HTTPException(status_code=428, detail="If-Match header is required")
+
+    # Parse version from ETag format: "1" -> 1
+    try:
+        version = int(if_match.strip('"'))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid If-Match header format")
+
+    cursor = conn.execute(q.OLYMPIAD_DELETE, (olympiad_id, version))
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=412, detail="Precondition Failed - resource has been modified")
+
+    return None
 
 
 # =============================================================================

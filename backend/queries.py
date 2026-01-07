@@ -2,22 +2,22 @@
 # Olympiad Queries
 # =============================================================================
 
-OLYMPIAD_LIST = "SELECT id, name FROM olympiads ORDER BY id"
+OLYMPIAD_LIST = "SELECT id, name, version FROM olympiads ORDER BY id"
 
-OLYMPIAD_GET = "SELECT id, name FROM olympiads WHERE id = ?"
+OLYMPIAD_GET = "SELECT id, name, version FROM olympiads WHERE id = ?"
 
-OLYMPIAD_EXISTS = "SELECT id FROM olympiads WHERE id = ?"
+OLYMPIAD_EXISTS = "SELECT id, version FROM olympiads WHERE id = ?"
 
-OLYMPIAD_CREATE = "INSERT INTO olympiads (name, pin) VALUES (?, ?) RETURNING id, name, pin"
+OLYMPIAD_CREATE = "INSERT INTO olympiads (name, pin) VALUES (?, ?) RETURNING id, name, pin, version"
 
 OLYMPIAD_VERIFY_PIN = "SELECT id FROM olympiads WHERE id = ? AND pin = ?"
 
 OLYMPIAD_UPDATE = """
-UPDATE olympiads SET name = ?, updated_at = CURRENT_TIMESTAMP
-WHERE id = ? RETURNING id, name
+UPDATE olympiads SET name = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND version = ? RETURNING id, name, version
 """
 
-OLYMPIAD_DELETE = "DELETE FROM olympiads WHERE id = ?"
+OLYMPIAD_DELETE = "DELETE FROM olympiads WHERE id = ? AND version = ?"
 
 
 # =============================================================================

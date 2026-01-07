@@ -9,7 +9,7 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Hardcoded ports
-BACKEND_PORT=8000
+BACKEND_PORT=8001
 FRONTEND_PORT=5173
 
 stop() {

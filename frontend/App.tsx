@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import './App.css'
+
 import {
   api,
-  OlympiadCreateResponse,
   PlayerResponse,
   TeamResponse,
   TeamDetail,
@@ -10,9 +10,29 @@ import {
   EventDetailWithBracket,
   StageKindResponse,
   StageConfig,
-  MatchResponse
+  MatchResponse,
+  OlympiadSummary
 } from './api'
-import { Page, useDataStore, useUIStore, pinStorage, fetchOlympiads, fetchEvents, fetchTeams, fetchPlayers } from './stores'
+
+import {
+  Page,
+  Modal,
+  useStore,
+  pinStorage,
+  fetchOlympiads,
+  fetchEvents,
+  fetchTeams,
+  fetchPlayers,
+  renameOlympiad,
+  deleteOlympiad,
+  createOlympiad,
+  createPlayer,
+  createEvent,
+  createTeam,
+  deleteEntity,
+  renameEntity,
+  verifyPin
+} from './stores'
 
 // UI Types
 interface ColorScheme {
@@ -38,7 +58,7 @@ const COLORS: ColorScheme[] = [
 
 // OlympiadBadge Component
 function OlympiadBadge() {
-  const { selectedOlympiad } = useDataStore()
+  const { selectedOlympiad } = useStore()
 
   if (!selectedOlympiad) {
     return <div className="olympiad-badge empty">Nessuna olimpiade</div>
@@ -48,16 +68,14 @@ function OlympiadBadge() {
 }
 
 function InfoModal() {
-  const { infoModalOpen, infoModalTitle, infoModalMessage, closeInfoModal } = useUIStore()
-
-  if (!infoModalOpen) return null
+  const { infoModalTitle, infoModalMessage, closeModal } = useStore()
 
   return (
-    <div className="modal-overlay" onClick={closeInfoModal}>
+    <div className="modal-overlay" onClick={closeModal}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         <h2>{infoModalTitle}</h2>
         <p className="modal-info-message" style={{ whiteSpace: 'pre-line' }}>{infoModalMessage}</p>
-        <button className="modal-ok-button" onClick={closeInfoModal}>
+        <button className="modal-ok-button" onClick={closeModal}>
           OK
         </button>
       </div>
@@ -65,65 +83,35 @@ function InfoModal() {
   )
 }
 
-// PIN Input Modal - shown when PIN is needed
 function PinInputModal() {
   const {
-    pinInputModalOpen, pinInputModalOlympiadId,
-    pinInputCallback, closePinInputModal, showInfoModal
-  } = useUIStore()
+    pinInputModalOlympiadId,
+    pinInputModalErrorMessage,
+    pinInputCallback,
+    closeModal
+  } = useStore()
+
+  if (!pinInputModalOlympiadId) throw Error("pinInputModalOlympiadId is null")
+  if (!pinInputCallback) throw Error("pinInputCallback is null")
 
   const [pinValue, setPinValue] = useState('')
-  const [error, setError] = useState<string | null>(null)
-
-  if (!pinInputModalOpen || !pinInputModalOlympiadId) return null
 
   const handleSubmit = async () => {
-    setError(null)
     if (pinValue.length !== 4) {
-      setError('Il PIN deve essere di 4 cifre')
+      useStore.setState({ pinInputModalErrorMessage: "Il PIN deve essere di 4 cifre" })
       return
     }
-
-    // Verify PIN with backend
-    const res = await api.verifyPin(pinInputModalOlympiadId, pinValue)
-    if (res.ok) {
-      pinStorage.setPin(pinInputModalOlympiadId, pinValue)
-      const callback = pinInputCallback
-      closePinInputModal()
-      setPinValue('')
-      setError(null)
-      if (callback) {
-        callback(pinValue)
-      }
-    }
-    else if (res.status === 404) {
-      // Olympiad was deleted - show info modal, then close and refresh
-      closePinInputModal()
-      setPinValue('')
-      setError(null)
-      useDataStore.setState({ selectedOlympiad: null })
-      useUIStore.setState({ page: Page.OLYMPIAD })
-      showInfoModal('Olimpiade non trovata', 'Questa olimpiade è stata eliminata da un altro admin')
-      fetchOlympiads()
-    }
     else {
-      // 401 or other error - show error message
-      const errorData: { detail?: string } = await res.json()
-      setError(errorData.detail || 'Errore durante la verifica del PIN')
+      pinInputCallback(pinValue)
     }
-  }
-
-  const handleCancel = () => {
-    closePinInputModal()
-    setPinValue('')
-    setError(null)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       handleSubmit()
-    } else if (e.key === 'Escape') {
-      handleCancel()
+    }
+    else if (e.key === 'Escape') {
+      closeModal()
     }
   }
 
@@ -142,9 +130,9 @@ function PinInputModal() {
           autoFocus
           placeholder="0000"
         />
-        {error && <p className="pin-error">{error}</p>}
+        {pinInputModalErrorMessage && <p className="pin-error">{pinInputModalErrorMessage}</p>}
         <div className="modal-buttons">
-          <button className="modal-cancel-button" onClick={handleCancel}>
+          <button className="modal-cancel-button" onClick={closeModal}>
             Annulla
           </button>
           <button className="modal-ok-button" onClick={handleSubmit}>
@@ -158,38 +146,24 @@ function PinInputModal() {
 
 // Create Olympiad Modal - shown when creating a new olympiad
 function CreateOlympiadModal() {
-  const { createOlympiadModalOpen, createOlympiadName, createOlympiadPin, closeCreateOlympiadModal, setCreateOlympiadPin, showInfoModal } = useUIStore()
-  const { olympiads } = useDataStore()
+  const { createOlympiadName, closeModal } = useStore()
 
+  const [pin, setPin] = useState(() => String(Math.floor(Math.random() * 10000)).padStart(4, '0'))
   const [error, setError] = useState<string | null>(null)
-
-  if (!createOlympiadModalOpen) {
-    return null
-  }
 
   const handleSubmit = async () => {
     setError(null)
-    if (createOlympiadPin.length !== 4 || !/^\d{4}$/.test(createOlympiadPin)) {
+    if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
       setError('Il PIN deve essere di 4 cifre')
     }
     else {
-      const res = await api.createOlympiad(createOlympiadName, createOlympiadPin)
-      if (res.ok) {
-        const data: OlympiadCreateResponse = await res.json()
-        pinStorage.setPin(data.id, data.pin)
-        useDataStore.setState({ olympiads: [...olympiads, { id: data.id, name: data.name }] })
-      }
-      else {
-        const errorData: { detail?: string } = await res.json()
-        showInfoModal('Errore', errorData.detail || 'Impossibile creare l\'olimpiade')
-        fetchOlympiads()
-      }
-      closeCreateOlympiadModal()
+      await createOlympiad(createOlympiadName, pin)
+      closeModal()
     }
   }
 
   const handleCancel = () => {
-    closeCreateOlympiadModal()
+    closeModal()
     setError(null)
   }
 
@@ -211,8 +185,8 @@ function CreateOlympiadModal() {
           type="text"
           className="pin-input"
           maxLength={4}
-          value={createOlympiadPin}
-          onChange={(e) => setCreateOlympiadPin(e.target.value.replace(/\D/g, ''))}
+          value={pin}
+          onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
           onKeyDown={handleKeyDown}
           autoFocus
         />
@@ -233,8 +207,7 @@ function CreateOlympiadModal() {
 
 // Create Event Modal - shown when creating a new event with stages
 function CreateEventModal() {
-  const { createEventModalOpen, createEventName, createEventCallback, closeCreateEventModal } = useUIStore()
-  const { selectedOlympiad } = useDataStore()
+  const { createEventName, createEventCallback, closeModal, selectedOlympiad } = useStore()
 
   const [scoreKind, setScoreKind] = useState<'points' | 'outcome'>('outcome')
   const [stages, setStages] = useState<StageConfig[]>([])
@@ -244,23 +217,21 @@ function CreateEventModal() {
   const [stageKinds, setStageKinds] = useState<StageKindResponse[]>([])
 
   useEffect(() => {
-    if (createEventModalOpen) {
-      // Fetch stage kinds
-      api.getStageKinds().then(async (res) => {
-        if (res.ok) {
-          const data: StageKindResponse[] = await res.json()
-          setStageKinds(data)
-          // Initialize stages with first available kind if empty
-          if (data.length > 0 && stages.length === 0) {
-            setStages([{ kind: data[0].kind, advance_count: null }])
-          }
+    // Fetch stage kinds
+    api.getStageKinds().then(async (res) => {
+      if (res.ok) {
+        const data: StageKindResponse[] = await res.json()
+        setStageKinds(data)
+        // Initialize stages with first available kind if empty
+        if (data.length > 0 && stages.length === 0) {
+          setStages([{ kind: data[0].kind, advance_count: null }])
         }
-      })
-    }
-  }, [createEventModalOpen])
+      }
+    })
+  }, [])
 
   useEffect(() => {
-    if (createEventModalOpen && selectedOlympiad) {
+    if (selectedOlympiad) {
       // Fetch all players (each player has a single-player team with team_id)
       api.getPlayers(selectedOlympiad.id).then(async (res) => {
         if (res.ok) {
@@ -269,9 +240,7 @@ function CreateEventModal() {
         }
       })
     }
-  }, [createEventModalOpen, selectedOlympiad])
-
-  if (!createEventModalOpen) return null
+  }, [selectedOlympiad])
 
   const handleStageKindChange = (index: number, kind: string) => {
     const newStages = [...stages]
@@ -307,7 +276,7 @@ function CreateEventModal() {
     }
     const callback = createEventCallback
     const name = createEventName
-    closeCreateEventModal()
+    closeModal()
     setError(null)
     setStages([])
     setSelectedTeamIds([])
@@ -318,7 +287,7 @@ function CreateEventModal() {
   }
 
   const handleCancel = () => {
-    closeCreateEventModal()
+    closeModal()
     setError(null)
     setStages([])
     setSelectedTeamIds([])
@@ -400,25 +369,54 @@ function CreateEventModal() {
   )
 }
 
+function PageRouter() {
+  const { page, selectedEvent, selectedEventWithBracket, selectedPlayer, selectedTeam } = useStore()
+
+  switch (page) {
+    case Page.OLYMPIAD:
+      return <Olympiads />
+    case Page.EVENTS:
+      if (selectedEventWithBracket) return <BracketView />
+      if (selectedEvent) return <EventDetailView />
+      return <Events />
+    case Page.PLAYERS:
+      return selectedPlayer ? <PlayerDetail /> : <Players />
+    case Page.TEAMS:
+      return selectedTeam ? <TeamDetailView /> : <Teams />
+    default:
+      return null
+  }
+}
+
 export default function App() {
-  const { page } = useUIStore()
-  const { selectedEvent, selectedEventWithBracket, selectedPlayer, selectedTeam } = useDataStore()
+  const { selectedOlympiad, activeModal } = useStore()
+
+  useEffect(() => {
+    const syncOlympiad = async () => {
+      if (selectedOlympiad) {
+        const res = await api.getOlympiad(selectedOlympiad.id)
+        if (!res.ok) {
+          useStore.setState({ selectedOlympiad: null })
+        }
+      }
+    }
+    syncOlympiad()
+  }, [selectedOlympiad?.id])
+
 
   return (
     <div className="app-wrapper">
       <HamburgerButton />
       <SideMenu />
-      <InfoModal />
-      <CreateOlympiadModal />
-      <CreateEventModal />
+      {activeModal === Modal.INFO && <InfoModal />}
+      {activeModal === Modal.CREATE_OLYMPIAD && <CreateOlympiadModal />}
+      {activeModal === Modal.CREATE_EVENT && <CreateEventModal />}
+      {activeModal === Modal.PIN_INPUT && <PinInputModal />}
       <main className="page-content">
         <div className="olympiad-bar">
           <OlympiadBadge />
         </div>
-        {page === Page.OLYMPIAD && <Olympiads />}
-        {page === Page.EVENTS && (selectedEventWithBracket ? <BracketView /> : (selectedEvent ? <EventDetailView /> : <Events />))}
-        {page === Page.PLAYERS && (selectedPlayer ? <PlayerDetail /> : <Players />)}
-        {page === Page.TEAMS && (selectedTeam ? <TeamDetailView /> : <Teams />)}
+        <PageRouter />
       </main>
     </div>
   )
@@ -426,7 +424,7 @@ export default function App() {
 
 // HamburgerButton Component
 function HamburgerButton() {
-  const { menuOpen, toggleMenu } = useUIStore()
+  const { menuOpen, toggleMenu } = useStore()
 
   return (
     <button className={`hamburger ${menuOpen ? 'open' : ''}`} onClick={toggleMenu}>
@@ -438,11 +436,10 @@ function HamburgerButton() {
 }
 
 function SideMenu() {
-  const { page, menuOpen } = useUIStore()
+  const { page, menuOpen } = useStore()
 
   const handleNavigation = (targetPage: Page) => {
-    useDataStore.setState({ selectedPlayer: null, selectedEvent: null, selectedEventWithBracket: null, selectedTeam: null })
-    useUIStore.setState({ page: targetPage })
+    useStore.setState({ selectedPlayer: null, selectedEvent: null, selectedEventWithBracket: null, selectedTeam: null, page: targetPage })
   }
 
   return (
@@ -480,13 +477,8 @@ interface ItemButtonProps {
   color: ColorScheme
   onClick: () => void
   olympiadId: number
-  renameApi: (pin: string, newName: string) => Promise<Response>
-  deleteApi: (pin: string) => Promise<Response>
-  onRefresh: () => void
-  onDeleteSuccess?: () => void
-  requestPin: (olympiadId: number, callback: (pin: string) => void) => void
-  showInfoModal: (title: string, message: string) => void
-  entityName: string
+  onRename: (newName: string, pin: string) => void
+  onDelete: (pin: string) => void
 }
 
 function ItemButton({
@@ -494,14 +486,10 @@ function ItemButton({
   color,
   onClick,
   olympiadId,
-  renameApi,
-  deleteApi,
-  onRefresh,
-  onDeleteSuccess,
-  requestPin,
-  showInfoModal,
-  entityName
+  onRename,
+  onDelete
 }: ItemButtonProps) {
+  const { showPinInputModal } = useStore()
   const [hovered, setHovered] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
@@ -511,50 +499,30 @@ function ItemButton({
     color: hovered ? color.hoverText : color.text
   }
 
-  // TODO: add check for when localStorage is lying about the PIN that belongs to a given olympiad_id
-  const handleApiCall = (
-    apiCall: (pin: string) => Promise<Response>,
-    errorMessage: string,
-    onSuccess?: () => void
-  ) => {
-    const executeWithPin = async (pin: string) => {
-      const res = await apiCall(pin)
-      if (!res.ok) {
-        const error: { detail?: string } = await res.json()
-        if (res.status === 401) {
-          pinStorage.removePin(olympiadId)
-          showInfoModal('Errore', 'PIN non valido')
-        } else {
-          showInfoModal('Errore', error.detail || errorMessage)
-        }
-      } else {
-        onSuccess?.()
-      }
-      onRefresh()
-    }
-
+  const executeWithPin = async (action: (pin: string) => void) => {
     const pin = pinStorage.getPin(olympiadId)
     if (pin) {
-      executeWithPin(pin)
-    } else {
-      requestPin(olympiadId, executeWithPin)
+      const isValid = await verifyPin(olympiadId, pin)
+      if (isValid) {
+        action(pin)
+      }
+      else {
+        pinStorage.removePin(olympiadId)
+        showPinInputModal(olympiadId, action)
+      }
+    }
+    else {
+      showPinInputModal(olympiadId, action)
     }
   }
 
   const handleRename = (newName: string) => {
-    handleApiCall(
-      (pin) => renameApi(pin, newName),
-      `Impossibile rinominare ${entityName}`
-    )
+    executeWithPin((pin) => onRename(newName, pin))
   }
 
   const handleDelete = () => {
     if (!confirm(`Sei sicuro di voler eliminare "${label}"?`)) return
-    handleApiCall(
-      (pin) => deleteApi(pin),
-      `Impossibile eliminare ${entityName}`,
-      onDeleteSuccess
-    )
+    executeWithPin(onDelete)
   }
 
   const handleRenameClick = (e: React.MouseEvent) => {
@@ -663,8 +631,7 @@ function AddItemInput({ placeholder, onAdd }: AddItemInputProps) {
 
 // Olympiads Component
 function Olympiads() {
-  const { olympiads, selectOlympiad } = useDataStore()
-  const { showInfoModal, requestPin, openCreateOlympiadModal } = useUIStore()
+  const { olympiads, openCreateOlympiadModal, selectOlympiad } = useStore()
 
   useEffect(() => {
     fetchOlympiads()
@@ -672,7 +639,6 @@ function Olympiads() {
 
   return (
     <div className="app-container">
-      <PinInputModal />
       <AddItemInput
         placeholder="Nuova olimpiade..."
         onAdd={(name) => openCreateOlympiadModal(name)}
@@ -685,13 +651,8 @@ function Olympiads() {
             color={COLORS[i % COLORS.length]}
             onClick={() => selectOlympiad(olympiad.id)}
             olympiadId={olympiad.id}
-            renameApi={(pin, newName) => api.renameOlympiad(olympiad.id, newName, pin)}
-            deleteApi={(pin) => api.deleteOlympiad(olympiad.id, pin)}
-            onRefresh={fetchOlympiads}
-            onDeleteSuccess={() => pinStorage.removePin(olympiad.id)}
-            requestPin={requestPin}
-            showInfoModal={showInfoModal}
-            entityName="l'olimpiade"
+            onRename={(newName, pin) => renameOlympiad(olympiad.id, newName, pin, olympiad.version)}
+            onDelete={(pin) => deleteOlympiad(olympiad.id, pin, olympiad.version)}
           />
         ))}
       </div>
@@ -701,14 +662,7 @@ function Olympiads() {
 
 // Events Component
 function Events() {
-  const { selectedOlympiad, events } = useDataStore()
-  const { showInfoModal, requestPin, openCreateEventModal } = useUIStore()
-
-  useEffect(() => {
-    if (selectedOlympiad) {
-      fetchEvents()
-    }
-  }, [selectedOlympiad])
+  const { selectedOlympiad, events, showPinInputModal, openCreateEventModal } = useStore()
 
   if (!selectedOlympiad) {
     return (
@@ -718,49 +672,18 @@ function Events() {
     )
   }
 
-  const doCreateWithStages = async (
-    name: string,
-    scoreKind: 'points' | 'outcome',
-    stages: StageConfig[],
-    teamIds: number[],
-    pin: string
-  ) => {
-    const res = await api.createEventWithStages(selectedOlympiad.id, name, scoreKind, stages, teamIds, pin)
-    if (!res.ok) {
-      const error: { detail?: string } = await res.json()
-      if (res.status === 404) {
-        useDataStore.setState({ selectedOlympiad: null })
-        useUIStore.setState({ page: Page.OLYMPIAD })
-
-        showInfoModal('Olimpiade non trovata', 'Questa olimpiade è stata eliminata.')
-        const olympiadsRes = await api.getOlympiads()
-        if (olympiadsRes.ok) {
-          useDataStore.setState({ olympiads: await olympiadsRes.json() })
-        }
-      } else if (res.status === 401) {
-        pinStorage.removePin(selectedOlympiad.id)
-        showInfoModal('Errore', 'PIN non valido')
-      } else {
-        showInfoModal('Errore', error.detail || 'Impossibile creare l\'evento')
-        fetchEvents()
-      }
-      return
-    }
-    const newEvent: EventDetailWithBracket = await res.json()
-    useDataStore.setState({
-      events: [...events, { id: newEvent.id, name: newEvent.name, status: newEvent.status, score_kind: newEvent.score_kind }],
-      selectedEventWithBracket: newEvent
-    })
-  }
+  useEffect(() => {
+    fetchEvents()
+  }, [selectedOlympiad])
 
   const handleCreate = (name: string) => {
     openCreateEventModal(name, (eventName, scoreKind, stages, teamIds) => {
       const pin = pinStorage.getPin(selectedOlympiad.id)
       if (pin) {
-        doCreateWithStages(eventName, scoreKind, stages, teamIds, pin)
+        createEvent(eventName, scoreKind, stages, teamIds, pin)
       } else {
-        requestPin(selectedOlympiad.id, (enteredPin) => {
-          doCreateWithStages(eventName, scoreKind, stages, teamIds, enteredPin)
+        showPinInputModal(selectedOlympiad.id, (enteredPin) => {
+          createEvent(eventName, scoreKind, stages, teamIds, enteredPin)
         })
       }
     })
@@ -770,13 +693,12 @@ function Events() {
     const res = await api.getEventWithBracket(selectedOlympiad.id, event.id)
     if (res.ok) {
       const detail: EventDetailWithBracket = await res.json()
-      useDataStore.setState({ selectedEventWithBracket: detail })
+      useStore.setState({ selectedEventWithBracket: detail })
     }
   }
 
   return (
     <div className="app-container">
-      <PinInputModal />
       <AddItemInput placeholder="Nuovo evento..." onAdd={handleCreate} />
       <div className="items-list">
         {events.map((event, i) => (
@@ -786,12 +708,8 @@ function Events() {
             color={COLORS[i % COLORS.length]}
             onClick={() => handleSelect(event)}
             olympiadId={selectedOlympiad.id}
-            renameApi={(pin, newName) => api.updateEvent(selectedOlympiad.id, event.id, pin, newName)}
-            deleteApi={(pin) => api.deleteEvent(selectedOlympiad.id, event.id, pin)}
-            onRefresh={fetchEvents}
-            requestPin={requestPin}
-            showInfoModal={showInfoModal}
-            entityName="l'evento"
+            onRename={(newName, pin) => renameEntity('event', event.id, newName, pin, event.version)}
+            onDelete={(pin) => deleteEntity('event', event.id, pin)}
           />
         ))}
       </div>
@@ -801,8 +719,7 @@ function Events() {
 
 // Teams Component
 function Teams() {
-  const { selectedOlympiad, teams } = useDataStore()
-  const { showInfoModal, requestPin } = useUIStore()
+  const { selectedOlympiad, teams, showPinInputModal } = useStore()
 
   useEffect(() => {
     fetchTeams()
@@ -816,38 +733,13 @@ function Teams() {
     )
   }
 
-  const doCreate = async (name: string, pin: string) => {
-    const res = await api.createTeam(selectedOlympiad.id, name, pin)
-    if (!res.ok) {
-      const error: { detail?: string } = await res.json()
-      if (res.status === 404) {
-        useDataStore.setState({ selectedOlympiad: null })
-        useUIStore.setState({ page: Page.OLYMPIAD })
-        showInfoModal('Olimpiade non trovata', 'Questa olimpiade è stata eliminata.')
-        const olympiadsRes = await api.getOlympiads()
-        if (olympiadsRes.ok) {
-          useDataStore.setState({ olympiads: await olympiadsRes.json() })
-        }
-      } else if (res.status === 401) {
-        pinStorage.removePin(selectedOlympiad.id)
-        showInfoModal('Errore', 'PIN non valido')
-      } else {
-        showInfoModal('Errore', error.detail || 'Impossibile creare la squadra')
-        fetchTeams()
-      }
-      return
-    }
-    const newTeam: TeamResponse = await res.json()
-    useDataStore.setState({ teams: [...teams, newTeam] })
-  }
-
   const handleCreate = (name: string) => {
     const pin = pinStorage.getPin(selectedOlympiad.id)
     if (pin) {
-      doCreate(name, pin)
+      createTeam(name, pin)
     } else {
-      requestPin(selectedOlympiad.id, (enteredPin) => {
-        doCreate(name, enteredPin)
+      showPinInputModal(selectedOlympiad.id, (enteredPin) => {
+        createTeam(name, enteredPin)
       })
     }
   }
@@ -856,13 +748,12 @@ function Teams() {
     const res = await api.getTeam(selectedOlympiad.id, team.id)
     if (res.ok) {
       const detail: TeamDetail = await res.json()
-      useDataStore.setState({ selectedTeam: detail })
+      useStore.setState({ selectedTeam: detail })
     }
   }
 
   return (
     <div className="app-container">
-      <PinInputModal />
       <AddItemInput placeholder="Nuova squadra..." onAdd={handleCreate} />
       <div className="items-list">
         {teams.map((team, i) => (
@@ -872,12 +763,8 @@ function Teams() {
             color={COLORS[i % COLORS.length]}
             onClick={() => handleSelect(team)}
             olympiadId={selectedOlympiad.id}
-            renameApi={(pin, newName) => api.renameTeam(selectedOlympiad.id, team.id, newName, pin)}
-            deleteApi={(pin) => api.deleteTeam(selectedOlympiad.id, team.id, pin)}
-            onRefresh={fetchTeams}
-            requestPin={requestPin}
-            showInfoModal={showInfoModal}
-            entityName="la squadra"
+            onRename={(newName, pin) => renameEntity('team', team.id, newName, pin, team.version)}
+            onDelete={(pin) => deleteEntity('team', team.id, pin)}
           />
         ))}
       </div>
@@ -887,8 +774,7 @@ function Teams() {
 
 // Players Component
 function Players() {
-  const { selectedOlympiad, players, selectPlayer } = useDataStore()
-  const { showInfoModal, requestPin } = useUIStore()
+  const { selectedOlympiad, players, selectPlayer, showPinInputModal } = useStore()
 
   useEffect(() => {
     if (selectedOlympiad) {
@@ -904,44 +790,18 @@ function Players() {
     )
   }
 
-  const doCreate = async (name: string, pin: string) => {
-    const res = await api.createPlayer(selectedOlympiad.id, name, pin)
-    if (!res.ok) {
-      const error: { detail?: string } = await res.json()
-      if (res.status === 404) {
-        useDataStore.setState({selectedOlympiad: null})
-        useUIStore.setState({ page: Page.OLYMPIAD })
-        showInfoModal('Olimpiade non trovata', 'Questa olimpiade è stata eliminata.')
-        fetchOlympiads()
-      }
-      else if (res.status === 401) {
-        pinStorage.removePin(selectedOlympiad.id)
-        showInfoModal('Errore', 'PIN non valido')
-      }
-      else {
-        showInfoModal('Errore', error.detail || 'Impossibile creare il giocatore')
-        fetchPlayers()
-      }
-      return
-    }
-    const newPlayer: PlayerResponse = await res.json()
-    useDataStore.setState({ players: [...players, newPlayer] })
-  }
-
   const handleCreate = (name: string) => {
     const pin = pinStorage.getPin(selectedOlympiad.id)
     if (pin) {
-      doCreate(name, pin)
-    } else {
-      requestPin(selectedOlympiad.id, (enteredPin) => {
-        doCreate(name, enteredPin)
-      })
+      createPlayer(name, pin)
+    }
+    else {
+      showPinInputModal(selectedOlympiad.id, (enteredPin) => { createPlayer(name, enteredPin) })
     }
   }
 
   return (
     <div className="app-container">
-      <PinInputModal />
       <AddItemInput placeholder="Nuovo giocatore..." onAdd={handleCreate} />
       <div className="items-list">
         {players.map((player, i) => (
@@ -951,12 +811,8 @@ function Players() {
             color={COLORS[i % COLORS.length]}
             onClick={() => selectPlayer(player.id)}
             olympiadId={selectedOlympiad.id}
-            renameApi={(pin, newName) => api.renamePlayer(selectedOlympiad.id, player.id, newName, pin)}
-            deleteApi={(pin) => api.deletePlayer(selectedOlympiad.id, player.id, pin)}
-            onRefresh={fetchPlayers}
-            requestPin={requestPin}
-            showInfoModal={showInfoModal}
-            entityName="il giocatore"
+            onRename={(newName, pin) => renameEntity('player', player.id, newName, pin, player.version)}
+            onDelete={(pin) => deleteEntity('player', player.id, pin)}
           />
         ))}
       </div>
@@ -966,7 +822,7 @@ function Players() {
 
 // Event Detail Component
 function EventDetailView() {
-  const { selectedEvent } = useDataStore()
+  const { selectedEvent } = useStore()
 
   if (!selectedEvent) return null
 
@@ -983,7 +839,7 @@ function EventDetailView() {
 
   return (
     <div className="app-container">
-      <button className="back-button" onClick={() => useDataStore.setState({ selectedEvent: null })}>← Torna agli eventi</button>
+      <button className="back-button" onClick={() => useStore.setState({ selectedEvent: null })}>← Torna agli eventi</button>
       <h2 className="detail-title">{selectedEvent.name}</h2>
       <p>Stato: {statusLabel[selectedEvent.status]}</p>
       <p>Tipo punteggio: {scoreKindLabel[selectedEvent.score_kind]}</p>
@@ -1003,13 +859,13 @@ function EventDetailView() {
 
 // Team Detail Component
 function TeamDetailView() {
-  const { selectedTeam } = useDataStore()
+  const { selectedTeam } = useStore()
 
   if (!selectedTeam) return null
 
   return (
     <div className="app-container">
-      <button className="back-button" onClick={() => useDataStore.setState({ selectedTeam: null })}>← Torna alle squadre</button>
+      <button className="back-button" onClick={() => useStore.setState({ selectedTeam: null })}>← Torna alle squadre</button>
       <h2 className="detail-title">{selectedTeam.name}</h2>
       <h3>Giocatori:</h3>
       {selectedTeam.players.length === 0 ? (
@@ -1027,11 +883,11 @@ function TeamDetailView() {
 
 // Player Detail Component
 function PlayerDetail() {
-  const { selectedPlayer } = useDataStore()
+  const { selectedPlayer } = useStore()
 
   return (
     <div className="app-container">
-      <button className="back-button" onClick={() => useDataStore.setState({ selectedPlayer: null })}>← Torna ai giocatori</button>
+      <button className="back-button" onClick={() => useStore.setState({ selectedPlayer: null })}>← Torna ai giocatori</button>
       <h2 className="detail-title">{selectedPlayer!.name}</h2>
     </div>
   )
@@ -1039,7 +895,7 @@ function PlayerDetail() {
 
 // Bracket View Component - renders single elimination bracket
 function BracketView() {
-  const { selectedEventWithBracket } = useDataStore()
+  const { selectedEventWithBracket } = useStore()
 
   if (!selectedEventWithBracket) return null
 
@@ -1091,7 +947,7 @@ function BracketView() {
 
   return (
     <div className="app-container bracket-container">
-      <button className="back-button" onClick={() => useDataStore.setState({ selectedEventWithBracket: null })}>← Torna agli eventi</button>
+      <button className="back-button" onClick={() => useStore.setState({ selectedEventWithBracket: null })}>← Torna agli eventi</button>
       <h2 className="detail-title">{selectedEventWithBracket.name}</h2>
       <p className="bracket-status">Stato: {statusLabel[selectedEventWithBracket.status]}</p>
 

@@ -1,27 +1,40 @@
-// Use the same hostname as the frontend, but port 8000 for the API
-const API_BASE = `http://${window.location.hostname}:8000`
+// Use the same hostname as the frontend, but port 8001 for the API
+const API_BASE = `http://${window.location.hostname}:8001`
 
 // API Types (matching backend responses)
 export interface OlympiadSummary {
   id: number
   name: string
+  version: number
+}
+
+export interface OlympiadDetail {
+  id: number
+  name: string
+  version: number
+  players: PlayerResponse[]
+  teams: TeamResponse[]
+  events: EventResponse[]
 }
 
 export interface OlympiadCreateResponse {
   id: number
   name: string
   pin: string
+  version: number
 }
 
 export interface PlayerResponse {
   id: number
   name: string
   team_id: number | null
+  version: number
 }
 
 export interface TeamResponse {
   id: number
   name: string
+  version: number
 }
 
 export interface TeamDetail {
@@ -35,6 +48,7 @@ export interface EventResponse {
   name: string
   status: 'registration' | 'started' | 'finished'
   score_kind: 'points' | 'outcome'
+  version: number
 }
 
 export interface EventDetail {
@@ -72,6 +86,7 @@ export interface EventDetailWithBracket {
   name: string
   status: 'registration' | 'started' | 'finished'
   score_kind: 'points' | 'outcome'
+  version: number
   teams: TeamResponse[]
   stages: StageResponse[]
 }
@@ -93,6 +108,9 @@ export const api = {
   getOlympiads: (): Promise<Response> =>
     fetch(`${API_BASE}/olympiads`),
 
+  getOlympiad: (olympiadId: number): Promise<Response> =>
+    fetch(`${API_BASE}/olympiads/${olympiadId}`),
+
   createOlympiad: (name: string, pin?: string): Promise<Response> =>
     fetch(`${API_BASE}/olympiads`, {
       method: 'POST',
@@ -100,17 +118,24 @@ export const api = {
       body: JSON.stringify({ name, pin })
     }),
 
-  renameOlympiad: (olympiadId: number, name: string, pin: string): Promise<Response> =>
+  renameOlympiad: (olympiadId: number, name: string, pin: string, version: number): Promise<Response> =>
     fetch(`${API_BASE}/olympiads/${olympiadId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Olympiad-PIN': pin,
+        'If-Match': `"${version}"`
+      },
       body: JSON.stringify({ name })
     }),
 
-  deleteOlympiad: (olympiadId: number, pin: string): Promise<Response> =>
+  deleteOlympiad: (olympiadId: number, pin: string, version: number): Promise<Response> =>
     fetch(`${API_BASE}/olympiads/${olympiadId}`, {
       method: 'DELETE',
-      headers: { 'X-Olympiad-PIN': pin }
+      headers: {
+        'X-Olympiad-PIN': pin,
+        'If-Match': `"${version}"`
+      }
     }),
 
   verifyPin: (olympiadId: number, pin: string): Promise<Response> =>
@@ -131,10 +156,10 @@ export const api = {
       body: JSON.stringify({ name })
     }),
 
-  renamePlayer: (olympiadId: number, playerId: number, name: string, pin: string): Promise<Response> =>
+  renamePlayer: (olympiadId: number, playerId: number, name: string, pin: string, version: number): Promise<Response> =>
     fetch(`${API_BASE}/olympiads/${olympiadId}/players/${playerId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin },
+      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin, 'If-Match': `"${version}"` },
       body: JSON.stringify({ name })
     }),
 
@@ -158,10 +183,10 @@ export const api = {
       body: JSON.stringify({ name, player_ids: playerIds })
     }),
 
-  renameTeam: (olympiadId: number, teamId: number, name: string, pin: string, playerIds: number[] = []): Promise<Response> =>
+  renameTeam: (olympiadId: number, teamId: number, name: string, pin: string, version: number, playerIds: number[] = []): Promise<Response> =>
     fetch(`${API_BASE}/olympiads/${olympiadId}/teams/${teamId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin },
+      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin, 'If-Match': `"${version}"` },
       body: JSON.stringify({ name, player_ids: playerIds })
     }),
 
@@ -197,10 +222,10 @@ export const api = {
       body: JSON.stringify({ name, score_kind: scoreKind })
     }),
 
-  updateEvent: (olympiadId: number, eventId: number, pin: string, name?: string, status?: string): Promise<Response> =>
+  updateEvent: (olympiadId: number, eventId: number, pin: string, name: string, version: number, status?: string): Promise<Response> =>
     fetch(`${API_BASE}/olympiads/${olympiadId}/events/${eventId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin },
+      headers: { 'Content-Type': 'application/json', 'X-Olympiad-PIN': pin, 'If-Match': `"${version}"` },
       body: JSON.stringify({ name, status })
     }),
 
