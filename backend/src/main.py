@@ -1,5 +1,6 @@
 import logging
 import math
+import os
 import random
 import sqlite3
 import string
@@ -12,15 +13,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from database import get_connection, init_db
-import queries as q
+from backend.src import database, queries
 
+DATABASE_PATH = Path(os.environ["OLYMPIAD_DATABASE_PATH"])
+SCHEMA_PATH = Path(os.environ["OLYMPIAD_SCHEMA_PATH"])
 
 # =============================================================================
 # Logging Setup
 # =============================================================================
 
-LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR = Path(os.environ["OLYMPIAD_LOG_DIR"])
 LOG_DIR.mkdir(exist_ok=True)
 
 log_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
@@ -46,6 +48,18 @@ frontend_handler = RotatingFileHandler(
 )
 frontend_handler.setFormatter(log_formatter)
 frontend_logger.addHandler(frontend_handler)
+
+# =============================================================================
+# Database setup
+# =============================================================================
+
+def get_connection() -> sqlite3.Connection:
+    """Create a new database connection using the default path."""
+    return database.get_connection(DATABASE_PATH)
+
+def init_db():
+    """Initialize the database using the default paths."""
+    database.init_db(DATABASE_PATH, SCHEMA_PATH)
 
 
 # =============================================================================
@@ -100,6 +114,7 @@ class PlayerResponse(BaseModel):
     id: int
     name: str
     team_id: int | None = None
+    version: int = 1
 
 
 # Team schemas
@@ -153,6 +168,10 @@ class VerifyPinRequest(BaseModel):
 class StageKindResponse(BaseModel):
     kind: str
     label: str
+
+
+class ForeignKeyPragmaResponse(BaseModel):
+    res: int
 
 
 # Logging schemas
@@ -210,14 +229,10 @@ class EventDetailWithBracket(BaseModel):
 # Helper Functions
 # =============================================================================
 
-def generate_pin() -> str:
-    """Generate a random 4-digit PIN."""
-    return ''.join(random.choices(string.digits, k=4))
-
 
 def verify_olympiad_pin(conn, olympiad_id: int, pin: Optional[str]) -> bool:
     """Verify if the provided PIN matches the olympiad's PIN."""
-    cursor = conn.execute(q.OLYMPIAD_VERIFY_PIN, (olympiad_id, pin))
+    cursor = conn.execute(queries.OLYMPIAD_VERIFY_PIN, (olympiad_id, pin))
     return cursor.fetchone() is not None
 
 
@@ -248,7 +263,7 @@ def create_single_elimination_bracket(
     match_ids = []
 
     for _ in range(total_matches):
-        cursor = conn.execute(q.MATCH_CREATE, (group_id,))
+        cursor = conn.execute(queries.MATCH_CREATE, (group_id,))
         match_id = cursor.fetchone()["id"]
         match_ids.append(match_id)
 
@@ -272,11 +287,11 @@ def create_single_elimination_bracket(
 
         for i, match_id in enumerate(current_round):
             next_match_id = next_round[i // 2]
-            conn.execute(q.BRACKET_MATCH_CREATE, (match_id, next_match_id))
+            conn.execute(queries.BRACKET_MATCH_CREATE, (match_id, next_match_id))
 
     # Final match has no next match
     final_match_id = matches_per_round[-1][0]
-    conn.execute(q.BRACKET_MATCH_CREATE, (final_match_id, None))
+    conn.execute(queries.BRACKET_MATCH_CREATE, (final_match_id, None))
 
     # Assign teams to first round matches
     # Seeding: team 0 vs team bracket_size-1, team 1 vs team bracket_size-2, etc.
@@ -304,12 +319,12 @@ def create_single_elimination_bracket(
         # Add team for seed1 if within range
         if seed1 < n_teams:
             team_id = team_ids[seed1]
-            conn.execute(q.MATCH_TEAM_ADD, (match_id, team_id))
+            conn.execute(queries.MATCH_TEAM_ADD, (match_id, team_id))
 
         # Add team for seed2 if within range (otherwise it's a bye)
         if seed2 < n_teams:
             team_id = team_ids[seed2]
-            conn.execute(q.MATCH_TEAM_ADD, (match_id, team_id))
+            conn.execute(queries.MATCH_TEAM_ADD, (match_id, team_id))
 
     return match_ids
 
@@ -318,12 +333,10 @@ def create_single_elimination_bracket(
 # App Setup
 # =============================================================================
 
-
 try:
     init_db()
 except Exception as e:
     logger.error(f"Failed to initialize database: {e}", exc_info=e)
-
 
 app = FastAPI()
 
@@ -335,32 +348,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# =============================================================================
-# Exception Handlers
-# =============================================================================
-
-
-@app.exception_handler(sqlite3.IntegrityError)
-def integrity_error_handler(request: Request, exc: sqlite3.IntegrityError):
-    error_str = str(exc)
-    logger.error(f"{request.url.path} - IntegrityError: {exc}", exc_info=exc)
-    if "UNIQUE constraint" in error_str:
-        raise HTTPException(status_code=409, detail="Resource already exists")
-    if "FOREIGN KEY constraint" in error_str:
-        raise HTTPException(status_code=400, detail="Referenced resource not found")
-    raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.exception_handler(sqlite3.Error)
-def sqlite_error_handler(request: Request, exc: sqlite3.Error):
-    logger.error(f"{request.url.path} - {type(exc).__name__}: {exc}", exc_info=exc)
-    raise HTTPException(status_code=500, detail="Internal server error")
-
 # =============================================================================
 # Database Dependency
 # =============================================================================
 
+# I hate this
 def db_dependency():
     """FastAPI dependency for database connection."""
     conn = None
@@ -389,7 +381,7 @@ def verified_olympiad(
     conn=Depends(db_dependency)
 ):
     """Dependency that verifies the olympiad exists and PIN is valid."""
-    cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
+    cursor = conn.execute(queries.OLYMPIAD_EXISTS, (olympiad_id,))
     if not cursor.fetchone():
         raise HTTPException(status_code=404, detail="Olimpiade non trovata")
 
@@ -407,7 +399,7 @@ def verified_olympiad(
 @app.get("/stage-kinds", response_model=list[StageKindResponse])
 def list_stage_kinds(conn=Depends(db_dependency)):
     """List all available stage kinds for tournament creation."""
-    cursor = conn.execute(q.STAGE_KINDS_LIST)
+    cursor = conn.execute(queries.STAGE_KINDS_LIST)
     return [StageKindResponse(kind=row["kind"], label=row["label"]) for row in cursor.fetchall()]
 
 
@@ -438,29 +430,40 @@ def log_frontend_error(log_request: FrontendLogRequest):
 # Olympiad Endpoints
 # =============================================================================
 
+@app.get("/foreign_keys_pragma")
+def foreign_keys_pragma():
+    conn = get_connection()
+    try:
+        cursor = conn.execute("PRAGMA foreign_keys")
+        row = cursor.fetchone()
+    finally:
+        conn.close()
+    return ForeignKeyPragmaResponse(res=row[0])
 
 @app.get("/olympiads", response_model=list[OlympiadListItem])
 def list_olympiads(conn=Depends(db_dependency)):
     """List all olympiads."""
-    cursor = conn.execute(q.OLYMPIAD_LIST)
+    cursor = conn.execute(queries.OLYMPIAD_LIST)
     return [OlympiadListItem(id=row["id"], name=row["name"], version=row["version"]) for row in cursor.fetchall()]
 
 
 @app.get("/olympiads/{olympiad_id}", response_model=OlympiadDetail)
 def get_olympiad(olympiad_id: int, response: Response, conn=Depends(db_dependency)):
     """Get full olympiad details including players, teams, and events."""
-    cursor = conn.execute(q.OLYMPIAD_GET, (olympiad_id,))
+
+    connection = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.execute(queries.OLYMPIAD_GET, (olympiad_id,))
     olympiad = cursor.fetchone()
     if not olympiad:
         raise HTTPException(status_code=404, detail="Olympiad not found")
 
-    cursor = conn.execute(q.PLAYER_LIST, (olympiad_id,))
+    cursor = conn.execute(queries.PLAYER_LIST, (olympiad_id,))
     players = [PlayerResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
 
-    cursor = conn.execute(q.TEAM_LIST, (olympiad_id,))
+    cursor = conn.execute(queries.TEAM_LIST, (olympiad_id,))
     teams = [TeamResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
 
-    cursor = conn.execute(q.EVENT_LIST, (olympiad_id,))
+    cursor = conn.execute(queries.EVENT_LIST, (olympiad_id,))
     events = [
         EventResponse(id=row["id"], name=row["name"], status=row["status"], score_kind=row["score_kind"])
         for row in cursor.fetchall()
@@ -478,25 +481,29 @@ def get_olympiad(olympiad_id: int, response: Response, conn=Depends(db_dependenc
 
 
 @app.post("/olympiads", response_model=OlympiadCreateResponse, status_code=201)
-def create_olympiad(data: OlympiadCreate, response: Response, conn=Depends(db_dependency)):
+def create_olympiad(data: OlympiadCreate, response: Response):
     """Create a new olympiad with a provided or generated PIN."""
-    if data.pin is not None:
-        if len(data.pin) != 4 or not data.pin.isdigit():
-            raise HTTPException(status_code=400, detail="PIN must be exactly 4 digits")
-        pin = data.pin
-    else:
-        pin = generate_pin()
 
-    cursor = conn.execute(q.OLYMPIAD_CREATE, (data.name, pin))
-    row = cursor.fetchone()
-    response.headers["ETag"] = f'"{row["version"]}"'
+    conn = get_connection()
+    try:
+        if data.pin:
+            assert len(data.pin) == 4 and data.pin.isdigit()
+            pin = data.pin
+        else:
+            pin = "".join(random.choices(string.digits, k=4))
+        cursor = conn.execute(queries.OLYMPIAD_CREATE, (data.name, pin))
+        row = cursor.fetchone()
+        response.headers["ETag"] = f'"{row["version"]}"'
+        conn.commit()
+    finally:
+        conn.close()
     return OlympiadCreateResponse(id=row["id"], name=row["name"], pin=row["pin"], version=row["version"])
 
 
 @app.post("/olympiads/{olympiad_id}/verify-pin")
 def verify_pin(olympiad_id: int, data: VerifyPinRequest, conn=Depends(db_dependency)):
     """Verify if the provided PIN is correct for the olympiad."""
-    cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
+    cursor = conn.execute(queries.OLYMPIAD_EXISTS, (olympiad_id,))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Olimpiade non trovata"})
 
@@ -511,23 +518,16 @@ def update_olympiad(
     olympiad_id: int,
     data: OlympiadRename,
     response: Response,
-    if_match: Optional[str] = Header(None, alias="If-Match"),
+    if_match: str = Header(alias="If-Match"),
     conn=Depends(verified_olympiad)
 ):
     """Update olympiad name. Requires PIN in X-Olympiad-PIN header and If-Match for optimistic locking."""
-    if if_match is None:
-        raise HTTPException(status_code=428, detail="If-Match header is required")
 
-    try:
-        version = int(if_match.strip('"'))
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid If-Match header format")
-
-    cursor = conn.execute(q.OLYMPIAD_UPDATE, (data.name, olympiad_id, version))
+    version = int(if_match.strip('"'))
+    cursor = conn.execute(queries.OLYMPIAD_UPDATE, (data.name, olympiad_id, version))
     row = cursor.fetchone()
     if not row:
         raise HTTPException(status_code=412, detail="Precondition Failed - resource has been modified")
-
     response.headers["ETag"] = f'"{row["version"]}"'
     return OlympiadResponse(id=row["id"], name=row["name"], version=row["version"])
 
@@ -548,7 +548,7 @@ def delete_olympiad(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid If-Match header format")
 
-    cursor = conn.execute(q.OLYMPIAD_DELETE, (olympiad_id, version))
+    cursor = conn.execute(queries.OLYMPIAD_DELETE, (olympiad_id, version))
     if cursor.rowcount == 0:
         raise HTTPException(status_code=412, detail="Precondition Failed - resource has been modified")
 
@@ -563,54 +563,72 @@ def delete_olympiad(
 @app.get("/olympiads/{olympiad_id}/players", response_model=list[PlayerResponse])
 def list_players(olympiad_id: int, conn=Depends(db_dependency)):
     """List all players in an olympiad."""
-    cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
+    cursor = conn.execute(queries.OLYMPIAD_EXISTS, (olympiad_id,))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Olympiad not found"})
 
-    cursor = conn.execute(q.PLAYER_LIST, (olympiad_id,))
-    return [PlayerResponse(id=row["id"], name=row["name"], team_id=row["team_id"]) for row in cursor.fetchall()]
+    cursor = conn.execute(queries.PLAYER_LIST, (olympiad_id,))
+    return [PlayerResponse(id=row["id"], name=row["name"], team_id=row["team_id"], version=row["version"]) for row in cursor.fetchall()]
 
 
 @app.post("/olympiads/{olympiad_id}/players", response_model=PlayerResponse)
 def create_player(olympiad_id: int, data: PlayerCreate, conn=Depends(verified_olympiad)):
     """Create a new player in an olympiad. Requires PIN in X-Olympiad-PIN header."""
     # Create the player
-    cursor = conn.execute(q.PLAYER_CREATE, (olympiad_id, data.name))
+    cursor = conn.execute(queries.PLAYER_CREATE, (olympiad_id, data.name))
     player_row = cursor.fetchone()
     player_id = player_row["id"]
     player_name = player_row["name"]
+    player_version = player_row["version"]
 
     # Create a single-player team with the same name
-    cursor = conn.execute(q.PLAYER_TEAM_CREATE, (olympiad_id, player_name))
+    cursor = conn.execute(queries.PLAYER_TEAM_CREATE, (olympiad_id, player_name))
     team_row = cursor.fetchone()
     team_id = team_row["id"]
 
     # Link the player to the team
-    conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
+    conn.execute(queries.TEAM_PLAYER_ADD, (team_id, player_id))
 
-    return PlayerResponse(id=player_id, name=player_name, team_id=team_id)
+    return PlayerResponse(id=player_id, name=player_name, team_id=team_id, version=player_version)
 
 
 @app.put("/olympiads/{olympiad_id}/players/{player_id}", response_model=PlayerResponse)
-def update_player(olympiad_id: int, player_id: int, data: PlayerCreate, conn=Depends(verified_olympiad)):
-    """Update a player's name. Requires PIN in X-Olympiad-PIN header."""
-    cursor = conn.execute(q.PLAYER_EXISTS, (player_id, olympiad_id))
+def update_player(
+    olympiad_id: int,
+    player_id: int,
+    data: PlayerCreate,
+    if_match: Optional[str] = Header(None, alias="If-Match"),
+    conn=Depends(verified_olympiad)
+):
+    """Update a player's name. Requires PIN in X-Olympiad-PIN header and If-Match for optimistic locking."""
+    if if_match is None:
+        raise HTTPException(status_code=428, detail="If-Match header is required")
+
+    try:
+        version = int(if_match.strip('"'))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid If-Match header format")
+
+    cursor = conn.execute(queries.PLAYER_EXISTS, (player_id, olympiad_id))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Player not found"})
 
-    cursor = conn.execute(q.PLAYER_UPDATE, (data.name, player_id))
+    cursor = conn.execute(queries.PLAYER_UPDATE, (data.name, player_id, version))
     row = cursor.fetchone()
-    return PlayerResponse(id=row["id"], name=row["name"])
+    if not row:
+        raise HTTPException(status_code=412, detail="Precondition Failed - resource has been modified")
+
+    return PlayerResponse(id=row["id"], name=row["name"], version=row["version"])
 
 
 @app.delete("/olympiads/{olympiad_id}/players/{player_id}")
 def delete_player(olympiad_id: int, player_id: int, conn=Depends(verified_olympiad)):
     """Delete a player from an olympiad. Requires PIN in X-Olympiad-PIN header."""
-    cursor = conn.execute(q.PLAYER_EXISTS, (player_id, olympiad_id))
+    cursor = conn.execute(queries.PLAYER_EXISTS, (player_id, olympiad_id))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Player not found"})
 
-    conn.execute(q.PLAYER_DELETE, (player_id,))
+    conn.execute(queries.PLAYER_DELETE, (player_id,))
     return {"message": "Player deleted"}
 
 
@@ -622,23 +640,23 @@ def delete_player(olympiad_id: int, player_id: int, conn=Depends(verified_olympi
 @app.get("/olympiads/{olympiad_id}/teams", response_model=list[TeamResponse])
 def list_teams(olympiad_id: int, conn=Depends(db_dependency)):
     """List all teams with more than one player in an olympiad."""
-    cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
+    cursor = conn.execute(queries.OLYMPIAD_EXISTS, (olympiad_id,))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Olympiad not found"})
 
-    cursor = conn.execute(q.TEAM_LIST, (olympiad_id,))
+    cursor = conn.execute(queries.TEAM_LIST, (olympiad_id,))
     return [TeamResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
 
 
 @app.get("/olympiads/{olympiad_id}/teams/{team_id}", response_model=TeamDetail)
 def get_team(olympiad_id: int, team_id: int, conn=Depends(db_dependency)):
     """Get team details including players."""
-    cursor = conn.execute(q.TEAM_GET, (team_id, olympiad_id))
+    cursor = conn.execute(queries.TEAM_GET, (team_id, olympiad_id))
     team = cursor.fetchone()
     if not team:
         return JSONResponse(status_code=404, content={"detail": "Team not found"})
 
-    cursor = conn.execute(q.TEAM_PLAYERS_LIST, (team_id,))
+    cursor = conn.execute(queries.TEAM_PLAYERS_LIST, (team_id,))
     players = [PlayerResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
 
     return TeamDetail(id=team["id"], name=team["name"], players=players)
@@ -647,12 +665,12 @@ def get_team(olympiad_id: int, team_id: int, conn=Depends(db_dependency)):
 @app.post("/olympiads/{olympiad_id}/teams", response_model=TeamResponse)
 def create_team(olympiad_id: int, data: TeamCreate, conn=Depends(verified_olympiad)):
     """Create a new team in an olympiad. Requires PIN in X-Olympiad-PIN header."""
-    cursor = conn.execute(q.TEAM_CREATE, (olympiad_id, data.name))
+    cursor = conn.execute(queries.TEAM_CREATE, (olympiad_id, data.name))
     row = cursor.fetchone()
     team_id = row["id"]
 
     for player_id in data.player_ids:
-        conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
+        conn.execute(queries.TEAM_PLAYER_ADD, (team_id, player_id))
 
     return TeamResponse(id=team_id, name=row["name"])
 
@@ -660,16 +678,16 @@ def create_team(olympiad_id: int, data: TeamCreate, conn=Depends(verified_olympi
 @app.put("/olympiads/{olympiad_id}/teams/{team_id}", response_model=TeamResponse)
 def update_team(olympiad_id: int, team_id: int, data: TeamCreate, conn=Depends(verified_olympiad)):
     """Update a team's name and players. Requires PIN in X-Olympiad-PIN header."""
-    cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
+    cursor = conn.execute(queries.TEAM_EXISTS, (team_id, olympiad_id))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Team not found"})
 
-    cursor = conn.execute(q.TEAM_UPDATE, (data.name, team_id))
+    cursor = conn.execute(queries.TEAM_UPDATE, (data.name, team_id))
     row = cursor.fetchone()
 
-    conn.execute(q.TEAM_PLAYERS_CLEAR, (team_id,))
+    conn.execute(queries.TEAM_PLAYERS_CLEAR, (team_id,))
     for player_id in data.player_ids:
-        conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
+        conn.execute(queries.TEAM_PLAYER_ADD, (team_id, player_id))
 
     return TeamResponse(id=row["id"], name=row["name"])
 
@@ -677,11 +695,11 @@ def update_team(olympiad_id: int, team_id: int, data: TeamCreate, conn=Depends(v
 @app.delete("/olympiads/{olympiad_id}/teams/{team_id}")
 def delete_team(olympiad_id: int, team_id: int, conn=Depends(verified_olympiad)):
     """Delete a team from an olympiad. Requires PIN in X-Olympiad-PIN header."""
-    cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
+    cursor = conn.execute(queries.TEAM_EXISTS, (team_id, olympiad_id))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Team not found"})
 
-    conn.execute(q.TEAM_DELETE, (team_id,))
+    conn.execute(queries.TEAM_DELETE, (team_id,))
     return {"message": "Team deleted"}
 
 
@@ -693,30 +711,30 @@ def delete_team(olympiad_id: int, team_id: int, conn=Depends(verified_olympiad))
 @app.post("/olympiads/{olympiad_id}/teams/{team_id}/players/{player_id}")
 def add_player_to_team(olympiad_id: int, team_id: int, player_id: int, conn=Depends(verified_olympiad)):
     """Add a player to a team. Requires PIN in X-Olympiad-PIN header."""
-    cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
+    cursor = conn.execute(queries.TEAM_EXISTS, (team_id, olympiad_id))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Team not found"})
 
-    cursor = conn.execute(q.PLAYER_EXISTS, (player_id, olympiad_id))
+    cursor = conn.execute(queries.PLAYER_EXISTS, (player_id, olympiad_id))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Player not found"})
 
-    conn.execute(q.TEAM_PLAYER_ADD, (team_id, player_id))
+    conn.execute(queries.TEAM_PLAYER_ADD, (team_id, player_id))
     return {"message": "Player added to team"}
 
 
 @app.delete("/olympiads/{olympiad_id}/teams/{team_id}/players/{player_id}")
 def remove_player_from_team(olympiad_id: int, team_id: int, player_id: int, conn=Depends(verified_olympiad)):
     """Remove a player from a team. Requires PIN in X-Olympiad-PIN header."""
-    cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
+    cursor = conn.execute(queries.TEAM_EXISTS, (team_id, olympiad_id))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Team not found"})
 
-    cursor = conn.execute(q.TEAM_PLAYER_EXISTS, (team_id, player_id))
+    cursor = conn.execute(queries.TEAM_PLAYER_EXISTS, (team_id, player_id))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Player not in team"})
 
-    conn.execute(q.TEAM_PLAYER_REMOVE, (team_id, player_id))
+    conn.execute(queries.TEAM_PLAYER_REMOVE, (team_id, player_id))
     return {"message": "Player removed from team"}
 
 
@@ -728,11 +746,11 @@ def remove_player_from_team(olympiad_id: int, team_id: int, player_id: int, conn
 @app.get("/olympiads/{olympiad_id}/events", response_model=list[EventResponse])
 def list_events(olympiad_id: int, conn=Depends(db_dependency)):
     """List all events in an olympiad."""
-    cursor = conn.execute(q.OLYMPIAD_EXISTS, (olympiad_id,))
+    cursor = conn.execute(queries.OLYMPIAD_EXISTS, (olympiad_id,))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Olympiad not found"})
 
-    cursor = conn.execute(q.EVENT_LIST, (olympiad_id,))
+    cursor = conn.execute(queries.EVENT_LIST, (olympiad_id,))
     return [
         EventResponse(id=row["id"], name=row["name"], status=row["status"], score_kind=row["score_kind"])
         for row in cursor.fetchall()
@@ -742,12 +760,12 @@ def list_events(olympiad_id: int, conn=Depends(db_dependency)):
 @app.get("/olympiads/{olympiad_id}/events/{event_id}", response_model=EventDetail)
 def get_event(olympiad_id: int, event_id: int, conn=Depends(db_dependency)):
     """Get event details including enrolled teams."""
-    cursor = conn.execute(q.EVENT_GET, (event_id, olympiad_id))
+    cursor = conn.execute(queries.EVENT_GET, (event_id, olympiad_id))
     event = cursor.fetchone()
     if not event:
         return JSONResponse(status_code=404, content={"detail": "Event not found"})
 
-    cursor = conn.execute(q.EVENT_TEAMS_LIST, (event_id,))
+    cursor = conn.execute(queries.EVENT_TEAMS_LIST, (event_id,))
     teams = [TeamResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
 
     return EventDetail(
@@ -765,7 +783,7 @@ def create_event(olympiad_id: int, data: EventCreate, conn=Depends(verified_olym
     if data.score_kind not in ("points", "outcome"):
         return JSONResponse(status_code=400, content={"detail": "score_kind must be 'points' or 'outcome'"})
 
-    cursor = conn.execute(q.EVENT_CREATE, (olympiad_id, data.name, data.score_kind))
+    cursor = conn.execute(queries.EVENT_CREATE, (olympiad_id, data.name, data.score_kind))
     row = cursor.fetchone()
     return EventResponse(
         id=row["id"], name=row["name"], status=row["status"], score_kind=row["score_kind"]
@@ -775,7 +793,7 @@ def create_event(olympiad_id: int, data: EventCreate, conn=Depends(verified_olym
 @app.put("/olympiads/{olympiad_id}/events/{event_id}", response_model=EventResponse)
 def update_event(olympiad_id: int, event_id: int, data: EventUpdate, conn=Depends(verified_olympiad)):
     """Update an event's name or status. Requires PIN in X-Olympiad-PIN header."""
-    cursor = conn.execute(q.EVENT_GET, (event_id, olympiad_id))
+    cursor = conn.execute(queries.EVENT_GET, (event_id, olympiad_id))
     event = cursor.fetchone()
     if not event:
         return JSONResponse(status_code=404, content={"detail": "Event not found"})
@@ -786,7 +804,7 @@ def update_event(olympiad_id: int, event_id: int, data: EventUpdate, conn=Depend
     if new_status not in ("registration", "started", "finished"):
         return JSONResponse(status_code=400, content={"detail": "Invalid status"})
 
-    cursor = conn.execute(q.EVENT_UPDATE, (new_name, new_status, event_id))
+    cursor = conn.execute(queries.EVENT_UPDATE, (new_name, new_status, event_id))
     row = cursor.fetchone()
     return EventResponse(
         id=row["id"], name=row["name"], status=row["status"], score_kind=row["score_kind"]
@@ -796,11 +814,11 @@ def update_event(olympiad_id: int, event_id: int, data: EventUpdate, conn=Depend
 @app.delete("/olympiads/{olympiad_id}/events/{event_id}")
 def delete_event(olympiad_id: int, event_id: int, conn=Depends(verified_olympiad)):
     """Delete an event. Requires PIN in X-Olympiad-PIN header."""
-    cursor = conn.execute(q.EVENT_EXISTS, (event_id, olympiad_id))
+    cursor = conn.execute(queries.EVENT_EXISTS, (event_id, olympiad_id))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Event not found"})
 
-    conn.execute(q.EVENT_DELETE, (event_id,))
+    conn.execute(queries.EVENT_DELETE, (event_id,))
     return {"message": "Event deleted"}
 
 
@@ -822,15 +840,15 @@ def enroll_team(
     conn=Depends(verified_olympiad)
 ):
     """Enroll a team in an event. Requires PIN in X-Olympiad-PIN header."""
-    cursor = conn.execute(q.EVENT_EXISTS, (event_id, olympiad_id))
+    cursor = conn.execute(queries.EVENT_EXISTS, (event_id, olympiad_id))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Event not found"})
 
-    cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
+    cursor = conn.execute(queries.TEAM_EXISTS, (team_id, olympiad_id))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Team not found"})
 
-    conn.execute(q.EVENT_TEAM_ENROLL, (event_id, team_id, data.seed))
+    conn.execute(queries.EVENT_TEAM_ENROLL, (event_id, team_id, data.seed))
     return {"message": "Team enrolled"}
 
 
@@ -844,11 +862,11 @@ def update_team_enrollment(
 ):
     """Update a team's seed in an event. Requires PIN in X-Olympiad-PIN header."""
     _ = olympiad_id  # Used by verified_olympiad dependency
-    cursor = conn.execute(q.EVENT_TEAM_EXISTS, (event_id, team_id))
+    cursor = conn.execute(queries.EVENT_TEAM_EXISTS, (event_id, team_id))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Team not enrolled in event"})
 
-    conn.execute(q.EVENT_TEAM_UPDATE, (data.seed, event_id, team_id))
+    conn.execute(queries.EVENT_TEAM_UPDATE, (data.seed, event_id, team_id))
     return {"message": "Team enrollment updated"}
 
 
@@ -856,11 +874,11 @@ def update_team_enrollment(
 def unenroll_team(olympiad_id: int, event_id: int, team_id: int, conn=Depends(verified_olympiad)):
     """Remove a team from an event. Requires PIN in X-Olympiad-PIN header."""
     _ = olympiad_id  # Used by verified_olympiad dependency
-    cursor = conn.execute(q.EVENT_TEAM_EXISTS, (event_id, team_id))
+    cursor = conn.execute(queries.EVENT_TEAM_EXISTS, (event_id, team_id))
     if not cursor.fetchone():
         return JSONResponse(status_code=404, content={"detail": "Team not enrolled in event"})
 
-    conn.execute(q.EVENT_TEAM_REMOVE, (event_id, team_id))
+    conn.execute(queries.EVENT_TEAM_REMOVE, (event_id, team_id))
     return {"message": "Team unenrolled"}
 
 
@@ -887,12 +905,12 @@ def create_event_with_stages(olympiad_id: int, data: EventCreateWithStages, conn
 
     # Validate all teams exist
     for team_id in data.team_ids:
-        cursor = conn.execute(q.TEAM_EXISTS, (team_id, olympiad_id))
+        cursor = conn.execute(queries.TEAM_EXISTS, (team_id, olympiad_id))
         if not cursor.fetchone():
             return JSONResponse(status_code=404, content={"detail": f"Team {team_id} not found"})
 
     # Get valid stage kinds
-    cursor = conn.execute(q.STAGE_KINDS_LIST)
+    cursor = conn.execute(queries.STAGE_KINDS_LIST)
     valid_kinds = [row["kind"] for row in cursor.fetchall()]
 
     # Validate stage kinds before creating anything
@@ -901,20 +919,20 @@ def create_event_with_stages(olympiad_id: int, data: EventCreateWithStages, conn
             return JSONResponse(status_code=400, content={"detail": f"Invalid stage kind: {stage_config.kind}"})
 
     # Create event
-    cursor = conn.execute(q.EVENT_CREATE, (olympiad_id, data.name, data.score_kind))
+    cursor = conn.execute(queries.EVENT_CREATE, (olympiad_id, data.name, data.score_kind))
     event_row = cursor.fetchone()
     event_id = event_row["id"]
 
     # Enroll all teams in the event
     for idx, team_id in enumerate(data.team_ids):
-        conn.execute(q.EVENT_TEAM_ENROLL, (event_id, team_id, idx))
+        conn.execute(queries.EVENT_TEAM_ENROLL, (event_id, team_id, idx))
 
     stages_response = []
 
     # Create stages
     for stage_order, stage_config in enumerate(data.stages):
         # Create the stage
-        cursor = conn.execute(q.STAGE_CREATE, (
+        cursor = conn.execute(queries.STAGE_CREATE, (
             event_id,
             stage_config.kind,
             stage_order,
@@ -923,12 +941,12 @@ def create_event_with_stages(olympiad_id: int, data: EventCreateWithStages, conn
         stage_id = cursor.fetchone()["id"]
 
         # Create a group for the stage
-        cursor = conn.execute(q.GROUP_CREATE, (stage_id,))
+        cursor = conn.execute(queries.GROUP_CREATE, (stage_id,))
         group_id = cursor.fetchone()["id"]
 
         # Add teams to group
         for team_id in data.team_ids:
-            conn.execute(q.GROUP_TEAM_ADD, (group_id, team_id))
+            conn.execute(queries.GROUP_TEAM_ADD, (group_id, team_id))
 
         matches_response = []
 
@@ -938,13 +956,13 @@ def create_event_with_stages(olympiad_id: int, data: EventCreateWithStages, conn
 
             # Get match details for response
             for match_id in match_ids:
-                cursor = conn.execute(q.MATCH_GET, (match_id,))
+                cursor = conn.execute(queries.MATCH_GET, (match_id,))
                 match_row = cursor.fetchone()
 
-                cursor = conn.execute(q.BRACKET_MATCH_GET, (match_id,))
+                cursor = conn.execute(queries.BRACKET_MATCH_GET, (match_id,))
                 bracket_row = cursor.fetchone()
 
-                cursor = conn.execute(q.MATCH_TEAMS_LIST, (match_id,))
+                cursor = conn.execute(queries.MATCH_TEAMS_LIST, (match_id,))
                 match_teams = []
                 for team_row in cursor.fetchall():
                     match_teams.append(MatchTeamResponse(
@@ -970,7 +988,7 @@ def create_event_with_stages(olympiad_id: int, data: EventCreateWithStages, conn
         ))
 
     # Get enrolled teams
-    cursor = conn.execute(q.EVENT_TEAMS_LIST, (event_id,))
+    cursor = conn.execute(queries.EVENT_TEAMS_LIST, (event_id,))
     teams = [TeamResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
 
     return EventDetailWithBracket(
@@ -986,24 +1004,24 @@ def create_event_with_stages(olympiad_id: int, data: EventCreateWithStages, conn
 @app.get("/olympiads/{olympiad_id}/events/{event_id}/bracket", response_model=EventDetailWithBracket)
 def get_event_with_bracket(olympiad_id: int, event_id: int, conn=Depends(db_dependency)):
     """Get event details including stages and bracket structure."""
-    cursor = conn.execute(q.EVENT_GET, (event_id, olympiad_id))
+    cursor = conn.execute(queries.EVENT_GET, (event_id, olympiad_id))
     event = cursor.fetchone()
     if not event:
         return JSONResponse(status_code=404, content={"detail": "Event not found"})
 
     # Get enrolled teams
-    cursor = conn.execute(q.EVENT_TEAMS_LIST, (event_id,))
+    cursor = conn.execute(queries.EVENT_TEAMS_LIST, (event_id,))
     teams = [TeamResponse(id=row["id"], name=row["name"]) for row in cursor.fetchall()]
 
     # Get stages
-    cursor = conn.execute(q.STAGE_LIST, (event_id,))
+    cursor = conn.execute(queries.STAGE_LIST, (event_id,))
     stages_response = []
 
     for stage_row in cursor.fetchall():
         stage_id = stage_row["id"]
 
         # Get groups for stage
-        cursor2 = conn.execute(q.GROUP_LIST, (stage_id,))
+        cursor2 = conn.execute(queries.GROUP_LIST, (stage_id,))
         groups = cursor2.fetchall()
 
         matches_response = []
@@ -1011,20 +1029,20 @@ def get_event_with_bracket(olympiad_id: int, event_id: int, conn=Depends(db_depe
             group_id = group_row["id"]
 
             # Get matches in group
-            cursor3 = conn.execute(q.MATCH_LIST, (group_id,))
+            cursor3 = conn.execute(queries.MATCH_LIST, (group_id,))
             for match_row in cursor3.fetchall():
                 match_id = match_row["id"]
 
                 # Get bracket info
-                cursor4 = conn.execute(q.BRACKET_MATCH_GET, (match_id,))
+                cursor4 = conn.execute(queries.BRACKET_MATCH_GET, (match_id,))
                 bracket_row = cursor4.fetchone()
 
                 # Get teams in match
-                cursor5 = conn.execute(q.MATCH_TEAMS_LIST, (match_id,))
+                cursor5 = conn.execute(queries.MATCH_TEAMS_LIST, (match_id,))
                 match_teams = []
                 for team_row in cursor5.fetchall():
                     # Get score if exists
-                    cursor6 = conn.execute(q.MATCH_SCORES_GET, (match_id,))
+                    cursor6 = conn.execute(queries.MATCH_SCORES_GET, (match_id,))
                     scores = {s["team_id"]: s["score"] for s in cursor6.fetchall()}
 
                     match_teams.append(MatchTeamResponse(

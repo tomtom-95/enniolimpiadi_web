@@ -12,13 +12,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_PORT=8001
 FRONTEND_PORT=5173
 
+# Backend configuration
+export OLYMPIAD_DATABASE_PATH="$SCRIPT_DIR/backend/olympiad.db"
+export OLYMPIAD_SCHEMA_PATH="$SCRIPT_DIR/backend/schema.sql"
+export OLYMPIAD_LOG_DIR="$SCRIPT_DIR/backend/logs"
+
 stop() {
     echo -e "${RED}Stopping application...${NC}"
 
     # Delete database file
-    if [ -f "$SCRIPT_DIR/backend/olympiad.db" ]; then
+    if [ -f "$OLYMPIAD_DATABASE_PATH" ]; then
         echo "Deleting database file..."
-        rm "$SCRIPT_DIR/backend/olympiad.db"
+        rm "$OLYMPIAD_DATABASE_PATH"
     fi
 
     # Kill processes on backend port
@@ -68,8 +73,8 @@ start() {
 
     # --- Start Services ---
     echo -e "${GREEN}Starting backend server...${NC}"
-    cd "$SCRIPT_DIR/backend"
-    uvicorn main:app --reload --host 0.0.0.0 --port $BACKEND_PORT &
+    cd "$SCRIPT_DIR"
+    uvicorn backend.src.main:app --reload --host 0.0.0.0 --port $BACKEND_PORT &
 
     cd "$SCRIPT_DIR"
     echo -e "${GREEN}Starting frontend server...${NC}"
@@ -107,12 +112,65 @@ purge() {
     fi
 
     # Delete database file
-    if [ -f "$SCRIPT_DIR/backend/olympiad.db" ]; then
+    if [ -f "$OLYMPIAD_DATABASE_PATH" ]; then
         echo "Removing database file..."
-        rm "$SCRIPT_DIR/backend/olympiad.db"
+        rm "$OLYMPIAD_DATABASE_PATH"
     fi
 
     echo -e "${GREEN}All dependencies purged. Run './run.sh start' to rebuild from scratch.${NC}"
+}
+
+backend() {
+    echo -e "${GREEN}Starting backend only...${NC}"
+
+    # Use test database
+    export OLYMPIAD_DATABASE_PATH="$SCRIPT_DIR/backend/testdb.db"
+
+    cd "$SCRIPT_DIR"
+
+    # Create virtual environment if it doesn't exist
+    if [ ! -d "$SCRIPT_DIR/venv" ]; then
+        echo "Creating Python virtual environment..."
+        python3 -m venv "$SCRIPT_DIR/venv"
+    fi
+
+    # Activate virtual environment
+    source "$SCRIPT_DIR/venv/bin/activate"
+
+    # Install dependencies
+    echo "Installing backend dependencies..."
+    pip install -r "$SCRIPT_DIR/backend/requirements.txt" -q
+
+    echo -e "${GREEN}Starting backend server...${NC}"
+    cd "$SCRIPT_DIR"
+    uvicorn backend.src.main:app --reload --host 0.0.0.0 --port $BACKEND_PORT
+
+    wait
+}
+
+test_backend() {
+    echo -e "${YELLOW}Running backend tests...${NC}"
+
+    # Use test database
+    export OLYMPIAD_DATABASE_PATH="$SCRIPT_DIR/backend/testdb.db"
+
+    cd "$SCRIPT_DIR"
+
+    # Create virtual environment if it doesn't exist
+    if [ ! -d "$SCRIPT_DIR/venv" ]; then
+        echo "Creating Python virtual environment..."
+        python3 -m venv "$SCRIPT_DIR/venv"
+    fi
+
+    # Activate virtual environment
+    source "$SCRIPT_DIR/venv/bin/activate"
+
+    # Install dependencies
+    echo "Installing backend dependencies..."
+    pip install -r "$SCRIPT_DIR/backend/requirements.txt" -q
+
+    cd "$SCRIPT_DIR"
+    pytest backend/tests/ -v
 }
 
 status() {
@@ -132,14 +190,16 @@ status() {
 }
 
 usage() {
-    echo "Usage: $0 {start|stop|restart|status|purge}"
+    echo "Usage: $0 {start|stop|restart|status|purge|backend|test_backend}"
     echo ""
     echo "Commands:"
-    echo "  start   - Stop any running instances, install dependencies, and start"
-    echo "  stop    - Stop both frontend and backend"
-    echo "  restart - Stop and start the application"
-    echo "  status  - Check if the application is running"
-    echo "  purge   - Remove all dependencies (node_modules, venv, db) for a clean rebuild"
+    echo "  start        - Stop any running instances, install dependencies, and start"
+    echo "  stop         - Stop both frontend and backend"
+    echo "  restart      - Stop and start the application"
+    echo "  status       - Check if the application is running"
+    echo "  purge        - Remove all dependencies (node_modules, venv, db) for a clean rebuild"
+    echo "  backend      - Run backend only with test database"
+    echo "  test_backend - Run backend tests"
 }
 
 # Handle Ctrl+C
@@ -162,6 +222,12 @@ case "$1" in
         ;;
     purge)
         purge
+        ;;
+    backend)
+        backend
+        ;;
+    test_backend)
+        test_backend
         ;;
     *)
         usage

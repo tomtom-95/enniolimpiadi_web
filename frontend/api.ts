@@ -163,10 +163,10 @@ export const api = {
       body: JSON.stringify({ name })
     }),
 
-  deletePlayer: (olympiadId: number, playerId: number, pin: string): Promise<Response> =>
+  deletePlayer: (olympiadId: number, playerId: number, pin: string, version: number): Promise<Response> =>
     fetch(`${API_BASE}/olympiads/${olympiadId}/players/${playerId}`, {
       method: 'DELETE',
-      headers: { 'X-Olympiad-PIN': pin }
+      headers: { 'X-Olympiad-PIN': pin, 'If-Match': `"${version}"` }
     }),
 
   // Team endpoints
@@ -190,10 +190,10 @@ export const api = {
       body: JSON.stringify({ name, player_ids: playerIds })
     }),
 
-  deleteTeam: (olympiadId: number, teamId: number, pin: string): Promise<Response> =>
+  deleteTeam: (olympiadId: number, teamId: number, pin: string, version: number): Promise<Response> =>
     fetch(`${API_BASE}/olympiads/${olympiadId}/teams/${teamId}`, {
       method: 'DELETE',
-      headers: { 'X-Olympiad-PIN': pin }
+      headers: { 'X-Olympiad-PIN': pin, 'If-Match': `"${version}"` }
     }),
 
   addPlayerToTeam: (olympiadId: number, teamId: number, playerId: number, pin: string): Promise<Response> =>
@@ -229,10 +229,10 @@ export const api = {
       body: JSON.stringify({ name, status })
     }),
 
-  deleteEvent: (olympiadId: number, eventId: number, pin: string): Promise<Response> =>
+  deleteEvent: (olympiadId: number, eventId: number, pin: string, version: number): Promise<Response> =>
     fetch(`${API_BASE}/olympiads/${olympiadId}/events/${eventId}`, {
       method: 'DELETE',
-      headers: { 'X-Olympiad-PIN': pin }
+      headers: { 'X-Olympiad-PIN': pin, 'If-Match': `"${version}"` }
     }),
 
   enrollTeam: (olympiadId: number, eventId: number, teamId: number, pin: string, seed?: number): Promise<Response> =>

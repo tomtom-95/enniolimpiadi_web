@@ -10,8 +10,7 @@ import {
   EventDetailWithBracket,
   StageKindResponse,
   StageConfig,
-  MatchResponse,
-  OlympiadSummary
+  MatchResponse
 } from './api'
 
 import {
@@ -23,15 +22,15 @@ import {
   fetchEvents,
   fetchTeams,
   fetchPlayers,
-  renameOlympiad,
-  deleteOlympiad,
   createOlympiad,
   createPlayer,
   createEvent,
   createTeam,
-  deleteEntity,
-  renameEntity,
-  verifyPin
+  validateAndRenameOlympiad,
+  validateAndDeleteOlympiad,
+  validateAndRenameEntity,
+  validateAndDeleteEntity,
+  ItemType,
 } from './stores'
 
 // UI Types
@@ -78,6 +77,56 @@ function InfoModal() {
         <button className="modal-ok-button" onClick={closeModal}>
           OK
         </button>
+      </div>
+    </div>
+  )
+}
+
+function ConfirmDeleteModal() {
+  const {
+    confirmDeleteLabel,
+    confirmDeleteItemType,
+    confirmDeleteItemId,
+    confirmDeleteItemVersion,
+    closeModal
+  } = useStore()
+
+  if (!confirmDeleteItemType || confirmDeleteItemId === null || confirmDeleteItemVersion === null) {
+    throw Error("confirmDelete item info is incomplete")
+  }
+
+  const handleConfirm = () => {
+    closeModal()
+    if (confirmDeleteItemType === 'olympiad') {
+      validateAndDeleteOlympiad(confirmDeleteItemId, confirmDeleteItemVersion)
+    }
+    else {
+      validateAndDeleteEntity(confirmDeleteItemType, confirmDeleteItemId, confirmDeleteItemVersion)
+    }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleConfirm()
+    }
+    else if (e.key === 'Escape') {
+      closeModal()
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onKeyDown={handleKeyDown}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <h2>Conferma eliminazione</h2>
+        <p>Sei sicuro di voler eliminare "<strong>{confirmDeleteLabel}</strong>"?</p>
+        <div className="modal-buttons">
+          <button className="modal-cancel-button" onClick={closeModal} autoFocus>
+            Annulla
+          </button>
+          <button className="modal-ok-button delete-confirm-btn" onClick={handleConfirm}>
+            Elimina
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -412,6 +461,7 @@ export default function App() {
       {activeModal === Modal.CREATE_OLYMPIAD && <CreateOlympiadModal />}
       {activeModal === Modal.CREATE_EVENT && <CreateEventModal />}
       {activeModal === Modal.PIN_INPUT && <PinInputModal />}
+      {activeModal === Modal.CONFIRM_DELETE && <ConfirmDeleteModal />}
       <main className="page-content">
         <div className="olympiad-bar">
           <OlympiadBadge />
@@ -439,7 +489,13 @@ function SideMenu() {
   const { page, menuOpen } = useStore()
 
   const handleNavigation = (targetPage: Page) => {
-    useStore.setState({ selectedPlayer: null, selectedEvent: null, selectedEventWithBracket: null, selectedTeam: null, page: targetPage })
+    useStore.setState({
+      selectedPlayer: null,
+      selectedEvent: null,
+      selectedEventWithBracket: null,
+      selectedTeam: null,
+      page: targetPage
+    })
   }
 
   return (
@@ -472,85 +528,185 @@ function SideMenu() {
   )
 }
 
-interface ItemButtonProps {
+// DeleteButton - handles deletion with confirmation
+interface DeleteButtonProps {
   label: string
-  color: ColorScheme
-  onClick: () => void
-  olympiadId: number
-  onRename: (newName: string, pin: string) => void
-  onDelete: (pin: string) => void
+  itemType: ItemType
+  itemId: number
+  itemVersion: number
 }
 
-function ItemButton({
-  label,
-  color,
-  onClick,
-  olympiadId,
-  onRename,
-  onDelete
-}: ItemButtonProps) {
-  const { showPinInputModal } = useStore()
-  const [hovered, setHovered] = useState(false)
-  const [isEditing, setIsEditing] = useState(false)
-  const [editValue, setEditValue] = useState(label)
+function DeleteButton({ label, itemType, itemId, itemVersion }: DeleteButtonProps) {
+  const { showConfirmDeleteModal } = useStore()
 
-  const style = {
-    backgroundColor: hovered ? color.hoverBg : color.bg,
-    color: hovered ? color.hoverText : color.text
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    showConfirmDeleteModal(label, itemType, itemId, itemVersion)
   }
 
-  const executeWithPin = async (action: (pin: string) => void) => {
-    const pin = pinStorage.getPin(olympiadId)
-    if (pin) {
-      const isValid = await verifyPin(olympiadId, pin)
-      if (isValid) {
-        action(pin)
+  return (
+    <button className="item-action-btn delete-btn" onClick={handleClick} title="Elimina">
+      <span className="icon-trash"></span>
+    </button>
+  )
+}
+
+interface RenameButtonV2Props {
+  itemType: ItemType
+  itemId: number
+}
+
+function RenameButtonV2({itemType, itemId}: RenameButtonV2Props) {
+  const handleOnClickRenameButtonV2 = () => {
+    useStore.setState({ isRenamingTextboxOpen: true,  selectedItemType: itemType, selectedItemId: itemId})
+  }
+
+  return (
+    <button className="item-action-btn rename-btn" onClick={handleOnClickRenameButtonV2} title="Rinomina">
+      <span className="icon-pencil"></span>
+    </button>
+  )
+}
+
+interface RenameFieldProps {
+  currValue: string
+  style: React.CSSProperties
+}
+
+function RenameField({currValue, style}: RenameFieldProps) {
+  const { selectedOlympiad } = useStore()
+  const [newValue, setTmpEditValue] = useState(currValue)
+
+  if (!selectedOlympiad) throw Error("selectedOlympiad is null")
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      useStore.setState({isRenamingTextboxOpen: false})
+      const pin = pinStorage.getPin(selectedOlympiad.id)
+      if (pin) {
+        // renameItem could file because the Pin is stale or because the olympiad does not
+        // exist anymore or a database error
+        // the pin being stale or the olympiad not existing anymore are something that we must deal
+        // with before calling every function that deals with modifying anything
+        // the solution:
+
+        //  validateOlympiadExistence()
+        //  validatePin()
+        // validateOlympiadExistence() is something we want to alwas do before any api call, but the thing is that if an given
+        // record is not present anymore the backend will inform about that anyway
+        // so what I want to do to have a central
+
+        // Imagine having renameItem, deleteItem, someotherOperationItem
+        //  in all the cases we must check for the olympiadExistence
+        //   - one solution is to call validateOlympiadExistence before calling any of this function
+        //      - if the olympiad id does not exist validateOlympiadExistence open an InfoModal telling that these olympiad has been deleted
+        //      - since we do not know exactly what we were trying to do when validateOlympiadExistence was called the most straightforward
+        //      - thing we can do is to call the backend to fetch an update olympiads list and redirect the user to the Olympiad page
+        //      - this is the default behavior because it is the best we can do if we run validateOlympiadExistence, no external knowledge
+        //   - the second solution is the one in which validateOlympiadExistence return something (for example a boolean) to the caller
+        //   - in this case we know we are running renameItem, deleteItem or some other function, so we can open a modalInfo with more detail information
+        //      (e.g. "Impossible to rename this item since the olympiad it refers to does not exist anymore")
+        //      but if we just return true or false we are losing information. Maybe the api call return a 500, 404 (Olimpiade non trovata), or a 401 (PIN non valido)
+        //      what it seems I want from the backend is an api call that can just return a status code of 200 if that olympiad id exist,
+        //        404 if that olympiad id is not found and 500 for any other backend error
+        //        do I really always want before any "real" api call have to run validateOlympiadExistence for checking if the olympiad really exist? It sound wasteful
+        //   the alternative is to call the function renameItem that does the api call to rename directly -> renameItem(olympiadId, itemType, itemId, newName)
+        //     this function can fail with error
+        //        500 (generic backend error),
+        //        412 (resource has been modified (different version number ))
+        //        409,
+        //        404, (olimpiade non trovata)
+        //    what should this function return? The api calls can return a bunch of status code 
+        //      if I am renam
+
+        // renameItem(selectedItemType, selectedItemId, pin)
       }
       else {
-        pinStorage.removePin(olympiadId)
-        showPinInputModal(olympiadId, action)
+        // Show pin modal where user is asked to insert the PIN
+        // This is not enough because after the user as inserted a PIN and clicked OK I want to
+        // run a function (renameItem or deleteItem ) which depends from where I come from
+        // instead of having the function as a callback in the inputModal can I set up the function
+        // in the global space? is this what is already happening?
+        useStore.setState({ activeModal: Modal.PIN_INPUT })
       }
     }
-    else {
-      showPinInputModal(olympiadId, action)
+    else if (e.key === 'Escape') {
+      useStore.setState({isRenamingTextboxOpen: false})
     }
   }
 
-  const handleRename = (newName: string) => {
-    executeWithPin((pin) => onRename(newName, pin))
-  }
+  return (
+    <div className="item-button item-button-editing" style={style}>
+      <input
+        type="text"
+        className="item-rename-input"
+        value={newValue}
+        onChange={(e) => setTmpEditValue(e.target.value)}
+        onKeyDown={handleKeyDown}
+        onBlur={() => useStore.setState({isRenamingTextboxOpen: false})}
+        // Need this because RenameField is always inside a ItemButton
+        // do avoid it I should render just the RenameField and not the ItemButton (I like it)
+        onClick={(e) => e.stopPropagation()}
+        autoFocus
+      />
+    </div>
+  )
+}
 
-  const handleDelete = () => {
-    if (!confirm(`Sei sicuro di voler eliminare "${label}"?`)) return
-    executeWithPin(onDelete)
-  }
+// RenameButton - handles renaming with inline edit mode
+interface RenameButtonProps {
+  currentName: string
+  itemType: ItemType
+  itemId: number
+  itemVersion: number
+  isEditing: boolean
+  onEditingChange: (isEditing: boolean) => void
+  editValue: string
+  onEditValueChange: (value: string) => void
+  style: React.CSSProperties
+}
 
-  const handleRenameClick = (e: React.MouseEvent) => {
+function RenameButton({
+  currentName,
+  itemType,
+  itemId,
+  itemVersion,
+  isEditing,
+  onEditingChange,
+  editValue,
+  onEditValueChange,
+  style
+}: RenameButtonProps) {
+  const handleStartEdit = (e: React.MouseEvent) => {
     e.stopPropagation()
-    setEditValue(label)
-    setIsEditing(true)
+    onEditValueChange(currentName)
+    onEditingChange(true)
   }
 
-  const handleRenameSubmit = () => {
+  const handleSubmit = () => {
     const trimmed = editValue.trim()
-    if (trimmed && trimmed !== label) {
-      handleRename(trimmed)
+    if (trimmed && trimmed !== currentName) {
+      if (itemType === 'olympiad') {
+        validateAndRenameOlympiad(itemId, trimmed, itemVersion)
+      }
+      else {
+        validateAndRenameEntity(itemType, itemId, trimmed, itemVersion)
+      }
     }
-    setIsEditing(false)
+    onEditingChange(false)
+  }
+
+  const handleCancel = () => {
+    onEditingChange(false)
+    onEditValueChange(currentName)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
-      handleRenameSubmit()
+      handleSubmit()
     } else if (e.key === 'Escape') {
-      setIsEditing(false)
-      setEditValue(label)
+      handleCancel()
     }
-  }
-
-  const handleDeleteClick = (e: React.MouseEvent) => {
-    e.stopPropagation()
-    handleDelete()
   }
 
   if (isEditing) {
@@ -560,13 +716,45 @@ function ItemButton({
           type="text"
           className="item-rename-input"
           value={editValue}
-          onChange={(e) => setEditValue(e.target.value)}
+          onChange={(e) => onEditValueChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          onBlur={handleRenameSubmit}
+          onBlur={handleSubmit}
+          onClick={(e) => e.stopPropagation()}
           autoFocus
         />
       </div>
     )
+  }
+
+  return (
+    <button className="item-action-btn rename-btn" onClick={handleStartEdit} title="Rinomina">
+      <span className="icon-pencil"></span>
+    </button>
+  )
+}
+
+interface ItemButtonProps {
+  label: string
+  color: ColorScheme
+  onClick: () => void
+  itemType: ItemType
+  itemId: number
+  itemVersion: number
+}
+
+function ItemButton({
+  label,
+  color,
+  onClick,
+  itemType,
+  itemId,
+  itemVersion
+}: ItemButtonProps) {
+  const [hovered, setHovered] = useState(false)
+
+  const style = {
+    backgroundColor: hovered ? color.hoverBg : color.bg,
+    color: hovered ? color.hoverText : color.text
   }
 
   return (
@@ -579,12 +767,16 @@ function ItemButton({
     >
       <span className="item-label">{label}</span>
       <div className="item-actions">
-        <button className="item-action-btn rename-btn" onClick={handleRenameClick} title="Rinomina">
-          <span className="icon-pencil"></span>
-        </button>
-        <button className="item-action-btn delete-btn" onClick={handleDeleteClick} title="Elimina">
-          <span className="icon-trash"></span>
-        </button>
+        <RenameButtonV2
+          itemType={itemType}
+          itemId={itemId}
+        />
+        <DeleteButton
+          label={label}
+          itemType={itemType}
+          itemId={itemId}
+          itemVersion={itemVersion}
+        />
       </div>
     </div>
   )
@@ -631,7 +823,14 @@ function AddItemInput({ placeholder, onAdd }: AddItemInputProps) {
 
 // Olympiads Component
 function Olympiads() {
-  const { olympiads, openCreateOlympiadModal, selectOlympiad } = useStore()
+  const {
+    olympiads,
+    isRenamingTextboxOpen,
+    selectedItemType,
+    selectedItemId,
+    openCreateOlympiadModal,
+    selectOlympiad,
+  } = useStore()
 
   useEffect(() => {
     fetchOlympiads()
@@ -644,17 +843,33 @@ function Olympiads() {
         onAdd={(name) => openCreateOlympiadModal(name)}
       />
       <div className="items-list">
-        {olympiads.map((olympiad, i) => (
-          <ItemButton
-            key={olympiad.id}
-            label={olympiad.name}
-            color={COLORS[i % COLORS.length]}
-            onClick={() => selectOlympiad(olympiad.id)}
-            olympiadId={olympiad.id}
-            onRename={(newName, pin) => renameOlympiad(olympiad.id, newName, pin, olympiad.version)}
-            onDelete={(pin) => deleteOlympiad(olympiad.id, pin, olympiad.version)}
-          />
-        ))}
+        {olympiads.map((olympiad, i) => {
+          const color = COLORS[i % COLORS.length]
+          const style = { backgroundColor: color.bg, color: color.text }
+
+          if (isRenamingTextboxOpen && selectedItemType === 'olympiad' && selectedItemId === olympiad.id) {
+            return (
+              <RenameField
+                key={olympiad.id}
+                currValue={olympiad.name}
+                style={style}
+              />
+            )
+          }
+          else {
+            return (
+              <ItemButton
+                key={olympiad.id}
+                label={olympiad.name}
+                color={color}
+                onClick={() => selectOlympiad(olympiad.id)}
+                itemType="olympiad"
+                itemId={olympiad.id}
+                itemVersion={olympiad.version}
+              />
+            )
+          }
+        })}
       </div>
     </div>
   )
@@ -707,9 +922,9 @@ function Events() {
             label={event.name}
             color={COLORS[i % COLORS.length]}
             onClick={() => handleSelect(event)}
-            olympiadId={selectedOlympiad.id}
-            onRename={(newName, pin) => renameEntity('event', event.id, newName, pin, event.version)}
-            onDelete={(pin) => deleteEntity('event', event.id, pin)}
+            itemType="event"
+            itemId={event.id}
+            itemVersion={event.version}
           />
         ))}
       </div>
@@ -762,9 +977,9 @@ function Teams() {
             label={team.name}
             color={COLORS[i % COLORS.length]}
             onClick={() => handleSelect(team)}
-            olympiadId={selectedOlympiad.id}
-            onRename={(newName, pin) => renameEntity('team', team.id, newName, pin, team.version)}
-            onDelete={(pin) => deleteEntity('team', team.id, pin)}
+            itemType="team"
+            itemId={team.id}
+            itemVersion={team.version}
           />
         ))}
       </div>
@@ -810,9 +1025,9 @@ function Players() {
             label={player.name}
             color={COLORS[i % COLORS.length]}
             onClick={() => selectPlayer(player.id)}
-            olympiadId={selectedOlympiad.id}
-            onRename={(newName, pin) => renameEntity('player', player.id, newName, pin, player.version)}
-            onDelete={(pin) => deleteEntity('player', player.id, pin)}
+            itemType="player"
+            itemId={player.id}
+            itemVersion={player.version}
           />
         ))}
       </div>

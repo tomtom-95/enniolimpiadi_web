@@ -25,24 +25,24 @@ OLYMPIAD_DELETE = "DELETE FROM olympiads WHERE id = ? AND version = ?"
 # =============================================================================
 
 PLAYER_LIST = """
-SELECT p.id, p.name, tp.team_id
+SELECT p.id, p.name, p.version, tp.team_id
 FROM players p
 LEFT JOIN team_players tp ON p.id = tp.player_id
 WHERE p.olympiad_id = ?
 ORDER BY p.name
 """
 
-PLAYER_GET = "SELECT id, name FROM players WHERE id = ? AND olympiad_id = ?"
+PLAYER_GET = "SELECT id, name, version FROM players WHERE id = ? AND olympiad_id = ?"
 
 PLAYER_EXISTS = "SELECT id FROM players WHERE id = ? AND olympiad_id = ?"
 
-PLAYER_CREATE = "INSERT INTO players (olympiad_id, name) VALUES (?, ?) RETURNING id, name"
+PLAYER_CREATE = "INSERT INTO players (olympiad_id, name) VALUES (?, ?) RETURNING id, name, version"
 
 PLAYER_TEAM_CREATE = "INSERT INTO teams (olympiad_id, name) VALUES (?, ?) RETURNING id"
 
 PLAYER_UPDATE = """
-UPDATE players SET name = ?, updated_at = CURRENT_TIMESTAMP
-WHERE id = ? RETURNING id, name
+UPDATE players SET name = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND version = ? RETURNING id, name, version
 """
 
 PLAYER_DELETE = "DELETE FROM players WHERE id = ?"
