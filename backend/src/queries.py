@@ -2,41 +2,37 @@
 # Olympiad Queries
 # =============================================================================
 
-OLYMPIAD_LIST = "SELECT id, name, version FROM olympiads ORDER BY id"
+olympiad_list = "SELECT id, name, version FROM olympiads ORDER BY id"
 
-OLYMPIAD_GET = "SELECT id, name, version FROM olympiads WHERE id = ?"
+olympiad_get = "SELECT id, name, version FROM olympiads WHERE id = ?"
 
-OLYMPIAD_EXISTS = "SELECT id, version FROM olympiads WHERE id = ?"
+olympiad_get_internal = "SELECT id, pin, version FROM olympiads WHERE id = ?"
 
-OLYMPIAD_CREATE = "INSERT INTO olympiads (name, pin) VALUES (?, ?) RETURNING id, name, pin, version"
+# olympiad_exist = "SELECT id, version FROM olympiads WHERE id = ?"
 
-OLYMPIAD_VERIFY_PIN = "SELECT id FROM olympiads WHERE id = ? AND pin = ?"
+olympiad_create = "INSERT INTO olympiads (name, pin) VALUES (?, ?) RETURNING id, name, pin, version"
 
-OLYMPIAD_UPDATE = """
+olympiad_update = """
 UPDATE olympiads SET name = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
 WHERE id = ? AND version = ? RETURNING id, name, version
 """
 
-OLYMPIAD_DELETE = "DELETE FROM olympiads WHERE id = ? AND version = ?"
+olympiad_delete = "DELETE FROM olympiads WHERE id = ?"
 
 
 # =============================================================================
 # Player Queries
 # =============================================================================
 
-PLAYER_LIST = """
-SELECT p.id, p.name, p.version, tp.team_id
-FROM players p
-LEFT JOIN team_players tp ON p.id = tp.player_id
-WHERE p.olympiad_id = ?
-ORDER BY p.name
-"""
+player_list = "SELECT id, name, version FROM players WHERE olympiad_id = ?"
 
 PLAYER_GET = "SELECT id, name, version FROM players WHERE id = ? AND olympiad_id = ?"
 
 PLAYER_EXISTS = "SELECT id FROM players WHERE id = ? AND olympiad_id = ?"
 
-PLAYER_CREATE = "INSERT INTO players (olympiad_id, name) VALUES (?, ?) RETURNING id, name, version"
+player_create = "INSERT INTO players (olympiad_id, name) VALUES (?, ?) RETURNING id, name, version"
+
+participant_create = "INSERT INTO participants (player_id) VALUES (?)"
 
 PLAYER_TEAM_CREATE = "INSERT INTO teams (olympiad_id, name) VALUES (?, ?) RETURNING id"
 
@@ -52,6 +48,9 @@ PLAYER_DELETE = "DELETE FROM players WHERE id = ?"
 # Team Queries
 # =============================================================================
 
+# TODO: wrong query, it is possible for a legitimate team to have 0 or 1 player at the
+#       moment of the creation, must have a way in the db to distinguish between
+#       actual team and the "fake" team composed by only one player
 # List only teams with more than one player inside
 TEAM_LIST = """
 SELECT t.id, t.name FROM teams t

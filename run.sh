@@ -144,8 +144,6 @@ backend() {
     echo -e "${GREEN}Starting backend server...${NC}"
     cd "$SCRIPT_DIR"
     uvicorn backend.src.main:app --reload --host 0.0.0.0 --port $BACKEND_PORT
-
-    wait
 }
 
 test_backend() {
